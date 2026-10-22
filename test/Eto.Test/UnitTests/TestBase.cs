@@ -1,19 +1,5 @@
-using Eto.Drawing;
-using Eto.Forms;
 using NUnit.Framework;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading;
-using Eto.Threading;
-using System.Diagnostics;
 using System.Runtime.ExceptionServices;
-using System.Threading.Tasks;
-using System.IO;
-using System.Linq.Expressions;
-using System.Reflection;
-using System.ComponentModel;
 using NUnit.Framework.Interfaces;
 using NUnit.Framework.Internal.Commands;
 using NUnit.Framework.Internal;
@@ -32,7 +18,7 @@ namespace Eto.Test.UnitTests
 	}
 
 	[System.AttributeUsage(AttributeTargets.Method | AttributeTargets.Class, Inherited = true, AllowMultiple = false)]
-	sealed class InvokeOnUIAttribute : Attribute, IWrapSetUpTearDown
+	public sealed class InvokeOnUIAttribute : Attribute, IWrapSetUpTearDown
 	{
 		public TestCommand Wrap(TestCommand command) => new RunOnUICommand(command);
 
@@ -49,15 +35,22 @@ namespace Eto.Test.UnitTests
 
 				var result = Application.Instance.Invoke(() =>
 				{
+					var uiSynchronizationContext = SynchronizationContext.Current;
 					try
 					{
 						context.EstablishExecutionEnvironment();
+						SynchronizationContext.SetSynchronizationContext(
+							SafeSynchronizationContext.Create(uiSynchronizationContext, context));
 						return innerCommand.Execute(context);
 					}
 					catch (Exception ex)
 					{
 						exception = ex;
 						return null;
+					}
+					finally
+					{
+						SynchronizationContext.SetSynchronizationContext(uiSynchronizationContext);
 					}
 				});
 
@@ -71,6 +64,138 @@ namespace Eto.Test.UnitTests
 		}
 	}
 
+	[SetUpFixture]
+	public class EtoTestSetup
+	{
+		static bool _initialized;
+		static bool _appWasCreated;
+
+		/// <summary>
+		/// Timeout for application initialization
+		/// </summary>
+		protected const int ApplicationTimeout = 2000;
+
+		/// <summary>
+		/// initializes the application when running unit tests directly through the IDE or NUnit gui.
+		/// To run on specific platforms, run it through the test runner in the Eto.Test app
+		/// </summary>
+		public static void Initialize()
+		{
+			if (_initialized)
+				return;
+			var platform = Platform.Instance;
+			if (platform == null)
+			{
+				try
+				{
+					// use config file to specify which generator to use for testing
+					var doc = System.Xml.Linq.XDocument.Load("Eto.Test.dll.config");
+					var setting = doc?.Root?.Element("appSettings")?.Elements("add").FirstOrDefault(r => r.Attribute("key").Value == "generator") ?? null;
+					var generatorTypeName = setting != null ? setting.Attribute("value").Value : null;
+					if (!string.IsNullOrEmpty(generatorTypeName))
+						platform = Platform.Get(generatorTypeName);
+				}
+				catch (FileNotFoundException)
+				{
+				}
+#if DEBUG
+				if (platform == null)
+				{
+					// search AppContext.BaseDirectory for artifacts folder
+					var dir = new DirectoryInfo(AppContext.BaseDirectory);
+					while (dir != null && dir.Name != "artifacts")
+						dir = dir.Parent;
+					if (dir != null)
+					{
+						var platformType = EtoEnvironment.Platform.IsMac ? Platforms.Mac64 : EtoEnvironment.Platform.IsLinux ? Platforms.Gtk : Platforms.Wpf;
+						var platformAssembly = platformType.Substring(platformType.IndexOf(',') + 1).Trim();
+						var names = platformAssembly.Split('.');
+						var testPlatformAssembly = $"{names[0]}.Test.{names[1]}";
+						var platformTypeName = platformType.Substring(0, platformType.IndexOf(','));
+						var platformDir = new DirectoryInfo(Path.Combine(dir.FullName, "test", testPlatformAssembly, "Debug"));
+#if NET
+						platformDir = platformDir.EnumerateDirectories().FirstOrDefault(r => !r.Name.StartsWith("net4"));
+#else
+						platformDir = platformDir.EnumerateDirectories().FirstOrDefault(r => r.Name.StartsWith("net4"));
+#endif
+						var platformPath = Path.Combine(platformDir.FullName, $"{platformAssembly}.dll");
+						if (File.Exists(platformPath))
+						{
+							var asm = Assembly.LoadFrom(platformPath);
+							var type = asm.GetType(platformTypeName);
+							if (type != null)
+								platform = Activator.CreateInstance(type) as Platform;
+						}
+					}
+
+				}
+#endif
+				Platform.Initialize(platform ?? Platform.Detect);
+			}
+
+			if (Application.Instance == null)
+			{
+				if (platform.Supports<Application>())
+				{
+					var ev = new ManualResetEvent(false);
+					Exception exception = null;
+					var thread = new Thread(() =>
+					{
+						try
+						{
+							var app = new Application(platform);
+							app.Initialized += (sender, e) => ev.Set();
+							if (platform.IsMac)
+							{
+								app.Attach();
+								app.Run();
+							}
+							else
+								app.Run();
+						}
+						catch (Exception ex)
+						{
+							Debug.WriteLine("Error running test application: {0}", ex);
+							exception = ex;
+							ev.Set();
+						}
+					}
+					);
+
+#pragma warning disable CA1416 // Validate platform compatibility
+					if (EtoEnvironment.Platform.IsWindows)
+						thread.SetApartmentState(ApartmentState.STA);
+#pragma warning restore CA1416 // Validate platform compatibility
+
+					thread.Start();
+					if (!ev.WaitOne(ApplicationTimeout))
+						Assert.Fail("Could not initialize application");
+
+					_appWasCreated = true;
+					if (exception != null)
+						ExceptionDispatchInfo.Capture(exception).Throw();
+				}
+			}
+			_initialized = true;
+		}
+
+		[OneTimeSetUp]
+		public void GlobalSetup()
+		{
+			Initialize();
+		}
+
+		[OneTimeTearDown]
+		public void GlobalTeardown()
+		{
+			if (!_appWasCreated)
+				return;
+			Application.Instance?.AsyncInvoke(() =>
+			{
+				Application.Instance?.Quit();
+			});
+		}
+	}
 
 	/// <summary>
 	/// Unit test utilities
@@ -90,69 +215,8 @@ namespace Eto.Test.UnitTests
 		/// <summary>
 		/// Default timeout for form operations
 		/// </summary>
-		const int DefaultTimeout = 4000;
+		protected const int DefaultTimeout = 4000;
 
-		/// <summary>
-		/// Timeout for application initialization
-		/// </summary>
-		const int ApplicationTimeout = 10000;
-
-		/// <summary>
-		/// initializes the application when running unit tests directly through the IDE or NUnit gui.
-		/// To run on specific platforms, run it through the test runner in the Eto.Test app
-		/// </summary>
-		public static void Initialize()
-		{
-			var platform = Platform.Instance;
-			if (platform == null)
-			{
-				try
-				{
-					// use config file to specify which generator to use for testing
-#if PCL
-					var doc = System.Xml.Linq.XDocument.Load("Eto.Test.dll.config");
-					var setting = doc != null ? doc.Root.Element("appSettings").Elements("add").FirstOrDefault(r => r.Attribute("key").Value == "generator") : null;
-					var generatorTypeName = setting != null ? setting.Attribute("value").Value : null;
-#else
-					var generatorTypeName = System.Configuration.ConfigurationManager.AppSettings["generator"];
-#endif
-					if (!string.IsNullOrEmpty(generatorTypeName))
-						platform = Platform.Get(generatorTypeName);
-				}
-				catch (FileNotFoundException)
-				{
-				}
-				Platform.Initialize(platform);
-			}
-
-			if (Application.Instance == null)
-			{
-				if (platform.Supports<Application>())
-				{
-					var ev = new ManualResetEvent(false);
-					Exception exception = null;
-					Task.Factory.StartNew(() =>
-					{
-						try
-						{
-							var app = new Application(platform);
-							app.Initialized += (sender, e) => ev.Set();
-							app.Run();
-						}
-						catch (Exception ex)
-						{
-							Debug.WriteLine("Error running test application: {0}", ex);
-							exception = ex;
-							ev.Set();
-						}
-					});
-					if (!ev.WaitOne(ApplicationTimeout))
-						Assert.Fail("Could not initialize application");
-					if (exception != null)
-						ExceptionDispatchInfo.Capture(exception).Throw();
-				}
-			}
-		}
 
 		static Application Application
 		{
@@ -173,17 +237,23 @@ namespace Eto.Test.UnitTests
 		/// <param name="timeout">Timeout to wait for the operation to complete</param>
 		public static void Run(Action<Application, Action> test, int timeout = DefaultTimeout)
 		{
-			Initialize();
+			var evStart = new ManualResetEvent(false);
 			var ev = new ManualResetEvent(false);
 			var application = Application;
 			Exception exception = null;
-			Action finished = () => ev.Set();
 			var context = TestExecutionContext.CurrentContext;
-			Action run = () =>
+
+			void finished() => ev.Set();
+
+			void run()
 			{
+				evStart.Set();
+				var uiSynchronizationContext = SynchronizationContext.Current;
 				try
 				{
 					context.EstablishExecutionEnvironment();
+					SynchronizationContext.SetSynchronizationContext(
+						SafeSynchronizationContext.Create(uiSynchronizationContext, context));
 					test(application, finished);
 				}
 				catch (Exception ex)
@@ -191,20 +261,32 @@ namespace Eto.Test.UnitTests
 					exception = ex;
 					ev.Set();
 				}
-			};
+				finally
+				{
+					SynchronizationContext.SetSynchronizationContext(uiSynchronizationContext);
+				}
+			}
+
 			if (application != null)
 				application.AsyncInvoke(run);
 			else
 				run();
 
+			if (!evStart.WaitOne(DefaultTimeout))
+				Assert.Fail("Could not start test in time");
+
 			if (!ev.WaitOne(timeout))
-			{
 				Assert.Fail("Test did not complete in time");
-			}
+
 			if (exception != null)
 				ExceptionDispatchInfo.Capture(exception).Throw();
 		}
 
+		/// <summary>
+		/// Test operations on the UI thread
+		/// </summary>
+		/// <param name="test">Delegate to execute on the UI thread</param>
+		/// <param name="timeout">Timeout to wait for the operation to complete, -1 to wait indefinitely</param>
 		public static void Invoke(Action test, int timeout = DefaultTimeout)
 		{
 			Run((app, finished) =>
@@ -214,6 +296,11 @@ namespace Eto.Test.UnitTests
 			}, timeout);
 		}
 
+		/// <summary>
+		/// Test operations on a form
+		/// </summary>
+		/// <param name="test">Delegate to execute on the form</param>
+		/// <param name="timeout">Timeout to wait for the operation to complete, -1 to wait indefinitely</param>
 		public static void Form(Action<Form> test, int timeout = DefaultTimeout)
 		{
 			Form<Form>(test, timeout);
@@ -223,7 +310,7 @@ namespace Eto.Test.UnitTests
 		/// Test operations on a form
 		/// </summary>
 		/// <param name="test">Delegate to execute on the form</param>
-		/// <param name="timeout">Timeout to wait for the operation to complete</param>
+		/// <param name="timeout">Timeout to wait for the operation to complete, -1 to wait indefinitely</param>
 		public static void Form<T>(Action<T> test, int timeout = DefaultTimeout)
 			where T : Form, new()
 		{
@@ -268,34 +355,202 @@ namespace Eto.Test.UnitTests
 			}
 		}
 
-		public static void Shown(Action<Form> init, Action test, bool replay = false, int timeout = DefaultTimeout)
+		public static void Async(Func<Task> test) => Async(DefaultTimeout, test);
+
+		public static void Async(int timeout, Func<Task> test)
 		{
-			Shown(form =>
+			Exception exception = null;
+			var mreStart = new ManualResetEvent(false);
+			var mre = new ManualResetEvent(false);
+			Application.Instance.AsyncInvoke(async () =>
+			{
+				mreStart.Set();
+				try
 				{
-					init(form);
-					return null;
-				},
-				(Control c) =>
+					await test();
+				}
+				catch (Exception ex)
 				{
-					test();
-				},
-				replay,
-				timeout
-			);
+					exception = ex;
+				}
+				finally
+				{
+					mre.Set();
+				}
+			});
+			if (!mreStart.WaitOne(DefaultTimeout))
+			{
+				Assert.Fail("Could not start test in time");
+				return;
+			}
+			if (!mre.WaitOne(timeout))
+			{
+				Assert.Fail("Test did not complete in time");
+				return;
+			}
+			if (exception != null)
+			{
+				ExceptionDispatchInfo.Capture(exception).Throw();
+			}
 		}
 
-		public static void ManualForm(string description, Func<Form, Control> init)
+
+		public static void ManualForm(string description, Func<Form, Control> init, bool allowPass = true, bool allowFail = true)
 		{
-			ManualForm(description, (form, Label) => init(form));
+			ManualForm(description, (form, Label) => init(form), allowPass, allowFail);
 		}
 
-		public static void ManualForm(string description, Func<Form, Label, Control> init)
+		public static void ManualForm(string description, Func<Form, Label, Control> init, bool allowPass = true, bool allowFail = true)
 		{
 			Exception exception = null;
 			Form(form =>
 			{
 				var label = new Label { Text = description };
 				var c = init(form, label);
+
+				var layout = new StackLayout
+				{
+					Spacing = 10,
+					Items =
+					{
+						new StackLayoutItem(c, HorizontalAlignment.Stretch, true),
+						label
+					}
+				};
+
+				if (allowFail || allowPass)
+				{
+					var table = new TableLayout { Spacing = new Size(2, 2) };
+					var row = new TableRow();
+					table.Rows.Add(row);
+					Control focusControl = null;
+					form.Shown += (sender, e) =>
+					{
+						focusControl?.Focus();
+					};
+
+					if (allowFail)
+					{
+						var failButton = new Button { Text = "Fail" };
+						focusControl = failButton;
+						failButton.Click += (sender, e) =>
+						{
+							try
+							{
+								Assert.Fail(description);
+							}
+							catch (Exception ex)
+							{
+								exception = ex;
+							}
+							finally
+							{
+								form.Close();
+							}
+						};
+						form.KeyDown += (sender, e) =>
+						{
+							if (e.KeyData == Keys.Escape)
+							{
+								failButton.PerformClick();
+								e.Handled = true;
+							}
+						};
+						row.Cells.Add(failButton);
+					}
+
+					if (allowPass)
+					{
+						var passButton = new Button { Text = "Pass" };
+						passButton.Click += (sender, e) => form.Close();
+						focusControl = passButton;
+						row.Cells.Add(passButton);
+
+						form.KeyDown += (sender, e) =>
+						{
+							if (e.KeyData == Keys.Enter)
+							{
+								passButton.PerformClick();
+								e.Handled = true;
+							}
+						};
+					}
+					layout.Items.Add(new StackLayoutItem(table, HorizontalAlignment.Center));
+				}
+
+				form.Content = layout;
+			}, timeout: -1);
+
+			if (exception != null)
+				ExceptionDispatchInfo.Capture(exception).Throw();
+		}
+
+		public static void Dialog(Action<Dialog> test, int timeout = DefaultTimeout)
+		{
+			Dialog<Dialog>(test, timeout);
+		}
+
+		/// <summary>
+		/// Test operations on a form
+		/// </summary>
+		/// <param name="test">Delegate to execute on the form</param>
+		/// <param name="timeout">Timeout to wait for the operation to complete</param>
+		public static void Dialog<T>(Action<T> test, int timeout = DefaultTimeout)
+			where T : Dialog, new()
+		{
+			T dialog = null;
+			bool shown = false;
+			try
+			{
+				Run((app, finished) =>
+				{
+					if (!Platform.Instance.Supports<Dialog>())
+						Assert.Inconclusive("This platform does not support Dialog");
+
+					dialog = new T();
+
+					test(dialog);
+
+					dialog.Closed += (sender, e) =>
+					{
+						dialog = null;
+						finished();
+					};
+					shown = true;
+					dialog.ShowModal();
+
+				}, timeout);
+			}
+			catch
+			{
+				if (dialog != null && shown)
+				{
+					var application = Application;
+					if (application != null)
+						application.Invoke(() =>
+						{
+							if (dialog != null && dialog.Loaded)
+								dialog.Close();
+						});
+					else
+						dialog.Close();
+				}
+				throw;
+			}
+		}
+
+		public static void ManualDialog(string description, Func<Dialog, Control> init)
+		{
+			ManualDialog(description, (form, Label) => init(form));
+		}
+
+		public static void ManualDialog(string description, Func<Dialog, Label, Control> init)
+		{
+			Exception exception = null;
+			Dialog(dialog =>
+			{
+				var label = new Label { Text = description };
+				var c = init(dialog, label);
 
 				var failButton = new Button { Text = "Fail" };
 				failButton.Click += (sender, e) =>
@@ -310,14 +565,16 @@ namespace Eto.Test.UnitTests
 					}
 					finally
 					{
-						form.Close();
+						dialog.Close();
 					}
 				};
 
 				var passButton = new Button { Text = "Pass" };
-				passButton.Click += (sender, e) => form.Close();
+				passButton.Click += (sender, e) => dialog.Close();
+				dialog.DefaultButton = passButton;
+				dialog.AbortButton = failButton;
 
-				form.Content = new StackLayout
+				dialog.Content = new StackLayout
 				{
 					Spacing = 10,
 					Items =
@@ -333,6 +590,49 @@ namespace Eto.Test.UnitTests
 				ExceptionDispatchInfo.Capture(exception).Throw();
 		}
 
+
+		public static void Shown(Action<Form> init, Action test, bool replay = false, int timeout = DefaultTimeout)
+		{
+			ShownAsync(init, () =>
+				{
+					test();
+					return Task.CompletedTask;
+				},
+				replay,
+				timeout
+			);
+		}
+
+		public static void ShownAsync(Action<Form> init, Func<Task> test, bool replay = false, int timeout = DefaultTimeout)
+		{
+			ShownAsync(form =>
+			{
+				init(form);
+				return null;
+			},
+				(Control c) => test(),
+				replay,
+				timeout
+			);
+		}
+
+		public static void Shown<T>(Func<Form, T> init, Action<T> test = null, bool replay = false, int timeout = DefaultTimeout)
+			where T : Control
+		{
+			ShownAsync(form =>
+			{
+				return init(form);
+			},
+				c =>
+				{
+					test?.Invoke(c);
+					return Task.CompletedTask;
+				},
+				replay,
+				timeout
+			);
+		}
+
 		/// <summary>
 		/// Test operations on a form once it is shown
 		/// </summary>
@@ -340,7 +640,7 @@ namespace Eto.Test.UnitTests
 		/// <param name="test">Delegate to execute on the form when shown</param>
 		/// <param name="replay">Replay the init and test again after shown</param>
 		/// <param name="timeout">Timeout to wait for the operation to complete</param>
-		public static void Shown<T>(Func<Form, T> init, Action<T> test = null, bool replay = false, int timeout = DefaultTimeout)
+		public static void ShownAsync<T>(Func<Form, T> init, Func<T, Task> test = null, bool replay = false, int timeout = DefaultTimeout)
 			where T : Control
 		{
 			var application = Application;
@@ -348,21 +648,26 @@ namespace Eto.Test.UnitTests
 			Form(form =>
 			{
 				var control = init(form);
-				form.Shown += (sender, e) =>
+				form.Shown += async (sender, e) =>
 				{
 					try
 					{
 						if (test != null)
 						{
-							test(control);
+							await test(control);
 							if (replay)
 							{
 								form.Content = null;
 								control = init(form);
 								if (control != null && form.Content == null && control != form)
 									form.Content = control;
+								// The replaced content isn't laid out until the platform gets around to it, so
+								// anything the test reads from it (size, splitter position, ...) would still be
+								// zero. Force a layout pass so the replay measures a settled window instead of
+								// racing it - without this the replay assertions fail intermittently on Mac.
+								form.UpdateLayout();
 								if (application == null)
-									test(control);
+									await test(control);
 							}
 						}
 					}
@@ -444,11 +749,71 @@ namespace Eto.Test.UnitTests
 				Assert.Fail("Paint event did not finish");
 		}
 
+		/// <summary>
+		/// Closes <paramref name="window"/> and waits until it is no longer visible.
+		/// </summary>
+		/// <remarks>
+		/// Closing a window is asynchronous on most platforms, so a test that simply calls
+		/// <see cref="Window.Close"/> as it finishes can leave the window on screen while the next test
+		/// starts - which stops that test's window from becoming active and breaks anything relying on
+		/// focus. Prefer this when a test shows a window it manages itself (as opposed to the one
+		/// <see cref="Form(Action{Form}, int)"/> and friends create and tear down for you).
+		/// </remarks>
+		public static async Task CloseAsync(Window window, int timeout = DefaultTimeout)
+		{
+			if (window == null)
+				return;
+			var closed = false;
+			window.Closed += (sender, e) => closed = true;
+			window.Close();
+			await WaitUntil(() => closed && !window.Visible, timeout);
+		}
+
+		/// <summary>
+		/// Waits for <paramref name="condition"/> to become true, polling until <paramref name="timeout"/> elapses.
+		/// </summary>
+		/// <remarks>
+		/// Prefer this over a fixed <c>await Task.Delay(n)</c> when waiting for the UI to settle before
+		/// asserting on its state: it returns as soon as the state is correct so a normal run doesn't pay
+		/// the full delay, while still giving a slow platform the same worst case. Pass whatever fixed
+		/// delay you would have used as the <paramref name="timeout"/>.
+		/// <para>
+		/// It never returns before the first poll, so a pending layout/paint pass always gets a chance to
+		/// run - a condition that is (incorrectly) already true isn't silently accepted on the first check.
+		/// </para>
+		/// Don't use it to wait for something that should *not* happen (e.g. "the window must still be
+		/// hidden after setting its owner"), or where the test needs the platform to fully settle rather
+		/// than just reach the expected state: in both cases the fixed delay is the point.
+		/// <para>
+		/// This does not assert on timeout; let the test's own assertion produce the failure message.
+		/// </para>
+		/// </remarks>
+		/// <param name="condition">Condition to check, evaluated on the calling (UI) thread</param>
+		/// <param name="timeout">Maximum time to wait for the condition, in milliseconds, or -1 to wait indefinitely</param>
+		/// <param name="pollInterval">Time to wait between checks of the condition, in milliseconds</param>
+		/// <returns>True if the condition became true within the timeout, false if it timed out</returns>
+		public static async Task<bool> WaitUntil(Func<bool> condition, int timeout = DefaultTimeout, int pollInterval = 10)
+		{
+			var delay = timeout < 0 ? pollInterval : Math.Min(pollInterval, timeout);
+			var stopwatch = Stopwatch.StartNew();
+			while (true)
+			{
+				await Task.Delay(delay);
+				if (condition())
+					return true;
+				if (timeout >= 0 && stopwatch.ElapsedMilliseconds >= timeout)
+					return false;
+			}
+		}
+
 		public static Task<TEventArgs> WaitEventAsync<TEventArgs>(Action<EventHandler<TEventArgs>> hookEvent)
 			where TEventArgs : EventArgs
 		{
 			var tcs = new TaskCompletionSource<TEventArgs>();
-			hookEvent((sender, e) => tcs.SetResult(e));
+			// The event may fire more than once (e.g. a window shown, hidden, then shown
+			// again), so complete only on the first invocation to avoid transitioning the
+			// task to a completed state twice.
+			hookEvent((sender, e) => tcs.TrySetResult(e));
 			return tcs.Task;
 		}
 
@@ -500,7 +865,7 @@ namespace Eto.Test.UnitTests
 					var defValAttr = propertyInfo.GetCustomAttribute<DefaultValueAttribute>();
 					var defaultValue = defValAttr != null ? defValAttr.Value : propertyInfo.PropertyType.GetTypeInfo().IsValueType ? Activator.CreateInstance(propertyInfo.PropertyType) : null;
 					var val = propertyInfo.GetValue(obj);
-					Assert.AreEqual(defaultValue, val, string.Format("Property '{0}' of type '{1}' is expected to be '{2}'", propertyName, Type.Name, defaultValue));
+					Assert.That(val, Is.EqualTo(defaultValue), $"Property '{propertyName}' of type '{Type.Name}' is expected to be '{defaultValue}'");
 				}
 			}
 
@@ -539,7 +904,8 @@ namespace Eto.Test.UnitTests
 				{
 					var ti = r.Type.GetTypeInfo();
 					return !typeof(Window).GetTypeInfo().IsAssignableFrom(ti)
-						&& !typeof(TabPage).GetTypeInfo().IsAssignableFrom(ti);
+						&& !typeof(TabPage).GetTypeInfo().IsAssignableFrom(ti)
+						&& !typeof(DocumentPage).GetTypeInfo().IsAssignableFrom(ti);
 				});
 		}
 
@@ -549,6 +915,8 @@ namespace Eto.Test.UnitTests
 			Type Type { get; }
 			T CreateControl();
 			Container CreateContainer(Control control);
+			void PopulateControl(Control control);
+			T CreatePopulatedControl();
 		}
 
 		public interface IContainerTypeInfo<out T> : IControlTypeInfo<T>
@@ -586,7 +954,102 @@ namespace Eto.Test.UnitTests
 				return new Panel { Content = control };
 			}
 
+			public void PopulateControl(Control control)
+			{
+				if (control is TextControl textControl)
+					textControl.Text = "Some Text";
+				else if (control is ImageView imageView)
+					imageView.Image = TestIcons.Logo;
+				else if (control is ListControl listControl)
+				{
+					listControl.Items.Add("Item 1");
+					listControl.Items.Add("Item 2");
+					listControl.Items.Add("Item 3");
+				}
+				else if (control is NumericStepper numericStepper)
+					numericStepper.Value = 100;
+				else if (control is TabControl tabControl)
+				{
+					tabControl.Pages.Add(new TabPage { Text = "Tab 1", Content = new Panel { Size = new Size(100, 100), Content = "Hello" } });
+					tabControl.Pages.Add(new TabPage { Text = "Tab 2" });
+					tabControl.Pages.Add(new TabPage { Text = "Tab 3" });
+				}
+				else if (control is DocumentControl documentControl)
+				{
+					documentControl.Pages.Add(new DocumentPage { Text = "Tab 1", Content = new Panel { Size = new Size(100, 100), Content = "Hello" } });
+					documentControl.Pages.Add(new DocumentPage { Text = "Tab 2" });
+					documentControl.Pages.Add(new DocumentPage { Text = "Tab 3" });
+				}
+				else if (control is Drawable drawable)
+				{
+					drawable.Size = new Size(100, 40);
+					drawable.Paint += (sender, e) =>
+					{
+						var c = drawable.BackgroundColor;
+						if (c.A == 0)
+							c = SystemColors.ControlText;
+						else
+							c.Invert();
+						e.Graphics.DrawText(SystemFonts.Default(), c, 0, 0, "Hello!");
+					};
+				}
+				else if (control is SegmentedButton segmented)
+				{
+					segmented.Items.Add("Segment 1");
+					segmented.Items.Add(TestIcons.Logo.WithSize(20, 20));
+					segmented.Items.Add("Segment 3");
+				}
+				else if (control is CheckBoxList checkBoxList)
+				{
+					checkBoxList.Items.Add("Item 1");
+					checkBoxList.Items.Add("Item 2");
+					checkBoxList.Items.Add("Item 3");
+				}
+				else if (control is RadioButtonList radioButtonList)
+				{
+					radioButtonList.Items.Add("Item 1");
+					radioButtonList.Items.Add("Item 2");
+					radioButtonList.Items.Add("Item 3");
+				}
+				else if (control is PixelLayout pixelLayout)
+				{
+					pixelLayout.Add("Hello", 0, 0);
+					pixelLayout.Add("World!", 24, 24);
+				}
+				else if (control is DynamicLayout dynamicLayout)
+				{
+					dynamicLayout.Add("Hello");
+					dynamicLayout.Add("World!");
+				}
+				else if (control is StackLayout stackLayout)
+				{
+					stackLayout.Items.Add("Hello");
+					stackLayout.Items.Add("World!");
+				}
+				else if (control is TableLayout tableLayout)
+				{
+					tableLayout.Rows.Add(new TableRow(new TableCell("Hello", true), new TableCell("World!", true)));
+					tableLayout.Rows.Add(new TableRow("Row", "2"));
+				}
+				else if (control is Panel panel && panel.Content == null)
+				{
+					panel.Content = "Hello, World!";
+				}
+				else if (control is Splitter splitter)
+				{
+					splitter.Panel1 = new TextArea { Text = "Hello" };
+					splitter.Panel2 = new Panel { Size = new Size(200, 200) };
+				}
+			}
+
 			public override string ToString() => Type.Name;
+
+			public T CreatePopulatedControl()
+			{
+				var c = CreateControl();
+				PopulateControl(c);
+				return c;
+			}
 		}
 
 		public static class ContainerTypeInfo

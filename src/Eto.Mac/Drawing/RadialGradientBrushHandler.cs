@@ -1,37 +1,3 @@
-using System;
-using Eto.Drawing;
-using System.Collections.Generic;
-using System.Linq;
-
-#if XAMMAC2
-using Foundation;
-using CoreGraphics;
-using ObjCRuntime;
-using CoreAnimation;
-using CoreImage;
-#elif OSX
-using MonoMac.AppKit;
-using MonoMac.Foundation;
-using MonoMac.CoreGraphics;
-using MonoMac.ObjCRuntime;
-using MonoMac.CoreAnimation;
-using MonoMac.CoreImage;
-#if Mac64
-using nfloat = System.Double;
-using nint = System.Int64;
-using nuint = System.UInt64;
-#else
-using nfloat = System.Single;
-using nint = System.Int32;
-using nuint = System.UInt32;
-#endif
-#if SDCOMPAT
-using CGSize = System.Drawing.SizeF;
-using CGRect = System.Drawing.RectangleF;
-using CGPoint = System.Drawing.PointF;
-#endif
-#endif
-
 #if OSX
 
 namespace Eto.Mac.Drawing
@@ -87,7 +53,7 @@ namespace Eto.iOS.Drawing
 				}
 			}
 
-			public void Draw(GraphicsHandler graphics, bool stroke, FillMode fillMode)
+			public void Draw(GraphicsHandler graphics, bool stroke, FillMode fillMode, bool clip)
 			{
 				var outerRadius = Radius.Width;
 				var yscale = Radius.Height / Radius.Width;
@@ -97,7 +63,8 @@ namespace Eto.iOS.Drawing
 				var rect = graphics.Control.GetPathBoundingBox().ToEto();
 				if (stroke)
 					graphics.Control.ReplacePathWithStrokedPath();
-				graphics.Clip(fillMode);
+				if (clip)
+					graphics.Clip(fillMode);
 
 				if (wrap != GradientWrapMode.Pad)
 				{
@@ -112,7 +79,7 @@ namespace Eto.iOS.Drawing
 				{
 					var stops = GradientHelper.GetGradientStops(StartColor.ToCG(), EndColor.ToCG(), scale, wrap).ToList();
 					lastScale = scale;
-					Gradient = new CGGradient(CGColorSpace.CreateDeviceRGB(), stops.Select(r => r.Item2).ToArray(), stops.Select(r => (nfloat)r.Item1).ToArray());
+					Gradient = new CGGradient(CGColorSpace.CreateSrgb(), stops.Select(r => r.Item2).ToArray(), stops.Select(r => (nfloat)r.Item1).ToArray());
 				}
 				else
 				{
@@ -169,9 +136,9 @@ namespace Eto.iOS.Drawing
 			((BrushObject)widget.ControlObject).Wrap = gradientWrap;
 		}
 
-		public override void Draw(object control, GraphicsHandler graphics, bool stroke, FillMode fillMode)
+		public override void Draw(object control, GraphicsHandler graphics, bool stroke, FillMode fillMode, bool clip)
 		{
-			((BrushObject)control).Draw(graphics, stroke, fillMode);
+			((BrushObject)control).Draw(graphics, stroke, fillMode, clip);
 		}
 	}
 }

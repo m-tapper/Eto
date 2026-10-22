@@ -1,11 +1,4 @@
-using System;
-using System.Reflection;
-using System.IO;
-using Eto.Drawing;
-using Eto.Forms;
-using Eto.IO;
 using Eto.Mac.Drawing;
-using Eto.Mac.IO;
 using Eto.Mac.Forms.Controls;
 using Eto.Mac.Forms.Printing;
 using Eto.Mac.Forms;
@@ -17,19 +10,7 @@ using Eto.Mac.Forms.ToolBar;
 using Eto.Shared.Forms;
 using Eto.Forms.ThemedControls;
 
-#if XAMMAC2
-using AppKit;
-using Foundation;
-using CoreGraphics;
-using ObjCRuntime;
-using CoreAnimation;
-#else
-using MonoMac.AppKit;
-using MonoMac.Foundation;
-using MonoMac.CoreGraphics;
-using MonoMac.ObjCRuntime;
-using MonoMac.CoreAnimation;
-#endif
+
 
 namespace Eto.Mac
 {
@@ -43,10 +24,8 @@ namespace Eto.Mac
 
 		public override bool IsMac { get { return true; } }
 
-#if XAMMAC2
-		public override string ID { get { return "XamMac2"; } }
-#elif XAMMAC1
-		public override string ID { get { return "XamMac"; } }
+#if MACOS_NET
+		public override string ID { get { return "macOS"; } }
 #elif Mac64
 		public override string ID { get { return "Mac64"; } }
 #else
@@ -57,6 +36,55 @@ namespace Eto.Mac
 			PlatformFeatures.DrawableWithTransparentContent
 			| PlatformFeatures.CustomCellSupportsControlView
 			| PlatformFeatures.TabIndexWithCustomContainers;
+
+		static Platform()
+		{
+			Style.Add<ThemedTextStepperHandler>(null, h =>
+			{
+				h.Control.Spacing = new Size(3, 0);
+			});
+
+
+			Style.Add<ThemedPropertyGrid>(null, c =>
+			{
+				c.ShowCategoriesChanged += (sender, e) =>
+				{
+					if (c.FindChild<TreeGridView>()?.Handler is TreeGridViewHandler tvh)
+						tvh.ShowGroups = c.ShowCategories;
+				};
+				c.Styles.Add<TreeGridViewHandler>(null, tvh =>
+				{
+					tvh.ShowGroups = c.ShowCategories;
+					tvh.AllowGroupSelection = false;
+					tvh.Control.AutoresizesOutlineColumn = false;
+				});
+			});
+
+			Style.Add<ThemedCollectionEditor>(null, c =>
+			{
+				c.Styles.Add<SegmentedButtonHandler>(null, sbh =>
+				{
+#if MACOS_NET
+					sbh.Control.ControlSize = NSControlSize.Small;
+#else
+					Messaging.void_objc_msgSend_IntPtr(sbh.Control.Handle, Selector.GetHandle("setControlSize:"), (IntPtr)NSControlSize.Small);
+#endif
+				});
+				c.Styles.Add<ButtonSegmentedItem>(null, bsi =>
+				{
+					if (bsi.Text == "+")
+					{
+						bsi.Text = null;
+						bsi.Image = new Icon(new IconHandler(NSImage.ImageNamed(NSImageName.AddTemplate)));
+					}
+					else if (bsi.Text == "-")
+					{
+						bsi.Text = null;
+						bsi.Image = new Icon(new IconHandler(NSImage.ImageNamed(NSImageName.RemoveTemplate)));
+					}
+				});
+			});
+		}
 
 		public Platform()
 		{
@@ -73,13 +101,6 @@ namespace Eto.Mac
 				var initField = appType.GetField("initialized", BindingFlags.Static | BindingFlags.NonPublic);
 				if (initField == null || Equals(initField.GetValue(null), false))
 				{
-#if XAMMAC
-					// with out this, Xamarin.Mac borks on netstandard.dll due to System.IO.Compression.FileSystem.dll
-					// at least when run with system mono
-					// let's be forgiving until that is fixed so we can actually use .net standard!
-					NSApplication.IgnoreMissingAssembliesDuringRegistration = true;
-#endif
-
 					NSApplication.Init();
 				}
 				// until everything is marked as thread safe correctly in monomac
@@ -96,6 +117,7 @@ namespace Eto.Mac
 			// Drawing
 			p.Add<Bitmap.IHandler>(() => new BitmapHandler());
 			p.Add<FontFamily.IHandler>(() => new FontFamilyHandler());
+			p.Add<FontTypeface.IHandler>(() => new FontTypefaceHandler());
 			p.Add<Font.IHandler>(() => new FontHandler());
 			p.Add<Fonts.IHandler>(() => new FontsHandler());
 			p.Add<Graphics.IHandler>(() => new GraphicsHandler());
@@ -109,7 +131,13 @@ namespace Eto.Mac
 			p.Add<TextureBrush.IHandler>(() => new TextureBrushHandler());
 			p.Add<LinearGradientBrush.IHandler>(() => new LinearGradientBrushHandler());
 			p.Add<RadialGradientBrush.IHandler>(() => new RadialGradientBrushHandler());
+			p.Add<Color.IHandler>(() => new ColorHandler());
 			p.Add<SystemColors.IHandler>(() => new SystemColorsHandler());
+			p.Add<FormattedText.IHandler>(() => new FormattedTextHandler());
+			p.Add<MagnificationGesture.IHandler>(() => new MagnificationGestureHandler());
+			p.Add<RotationGesture.IHandler>(() => new RotationGestureHandler());
+			p.Add<PanGesture.IHandler>(() => new PanGestureHandler());
+			p.Add<ScrollGesture.IHandler>(() => new ScrollGestureHandler());
 
 			// Forms.Cells
 			p.Add<CheckBoxCell.IHandler>(() => new CheckBoxCellHandler());
@@ -157,13 +185,20 @@ namespace Eto.Mac
 #pragma warning disable CS0618 // Type or member is obsolete
 			p.Add<TreeView.IHandler>(() => new TreeViewHandler());
 #pragma warning restore CS0618 // Type or member is obsolete
-			p.Add<WebView.IHandler>(() => new WebViewHandler());
+			p.Add<WebView.IHandler>(() => new WKWebViewHandler());
 			p.Add<RichTextArea.IHandler>(() => new RichTextAreaHandler());
 			p.Add<Stepper.IHandler>(() => new StepperHandler());
 			p.Add<TextStepper.IHandler>(() => new ThemedTextStepperHandler());
 			p.Add<FilePicker.IHandler>(() => new ThemedFilePickerHandler());
 			p.Add<DocumentControl.IHandler>(() => new ThemedDocumentControlHandler());
 			p.Add<DocumentPage.IHandler>(() => new ThemedDocumentPageHandler());
+			p.Add<SegmentedButton.IHandler>(() => new SegmentedButtonHandler());
+			p.Add<ButtonSegmentedItem.IHandler>(() => new ButtonSegmentedItemHandler());
+			p.Add<MenuSegmentedItem.IHandler>(() => new MenuSegmentedItemHandler());
+			p.Add<ToggleButton.IHandler>(() => new ToggleButtonHandler());
+			p.Add<PropertyGrid.IHandler>(() => new ThemedPropertyGridHandler());
+			p.Add<CollectionEditor.IHandler>(() => new ThemedCollectionEditorHandler());
+			p.Add<NativeControlHost.IHandler>(() => new NativeControlHandler());
 
 			// Forms.Menu
 			p.Add<CheckMenuItem.IHandler>(() => new CheckMenuItemHandler());
@@ -172,19 +207,25 @@ namespace Eto.Mac
 			p.Add<MenuBar.IHandler>(() => new MenuBarHandler());
 			p.Add<RadioMenuItem.IHandler>(() => new RadioMenuItemHandler());
 			p.Add<SeparatorMenuItem.IHandler>(() => new SeparatorMenuItemHandler());
-			
+			p.Add<SubMenuItem.IHandler>(() => new SubMenuItemHandler());
+
 			// Forms.Printing
 			p.Add<PrintDialog.IHandler>(() => new PrintDialogHandler());
+			p.Add<PrintPreviewDialog.IHandler>(() => new PrintDialogHandler());
 			p.Add<PrintDocument.IHandler>(() => new PrintDocumentHandler());
 			p.Add<PrintSettings.IHandler>(() => new PrintSettingsHandler());
-			
+
 			// Forms.ToolBar
 			p.Add<CheckToolItem.IHandler>(() => new CheckToolItemHandler());
 			p.Add<RadioToolItem.IHandler>(() => new RadioToolItemHandler());
 			p.Add<SeparatorToolItem.IHandler>(() => new SeparatorToolItemHandler());
 			p.Add<ButtonToolItem.IHandler>(() => new ButtonToolItemHandler());
+			if (MacVersion.IsAtLeast(10, 15))
+				p.Add<DropDownToolItem.IHandler>(() => new DropDownToolItemHandler());
+			else
+				p.Add<DropDownToolItem.IHandler>(() => new DropDownToolItemPreCatalinaHandler());
 			p.Add<ToolBar.IHandler>(() => new ToolBarHandler());
-			
+
 			// Forms
 			p.Add<AboutDialog.IHandler>(() => new ThemedAboutDialogHandler());
 			p.Add<Application.IHandler>(() => new ApplicationHandler());
@@ -194,6 +235,7 @@ namespace Eto.Mac
 			p.Add<Dialog.IHandler>(() => new DialogHandler());
 			p.Add<FontDialog.IHandler>(() => new FontDialogHandler());
 			p.Add<Form.IHandler>(() => new FormHandler());
+			p.Add<FloatingForm.IHandler>(() => new FloatingFormHandler());
 			p.Add<MessageBox.IHandler>(() => new MessageBoxHandler());
 			p.Add<OpenFileDialog.IHandler>(() => new OpenFileDialogHandler());
 			p.Add<PixelLayout.IHandler>(() => new PixelLayoutHandler());
@@ -205,36 +247,47 @@ namespace Eto.Mac
 			p.Add<Screen.IScreensHandler>(() => new ScreensHandler());
 			p.Add<Keyboard.IHandler>(() => new KeyboardHandler());
 			p.Add<FixedMaskedTextProvider.IHandler>(() => new FixedMaskedTextProviderHandler());
-			p.Add<DataObject.IHandler>(() => new DataObjectHandler());
+			p.Add<DataObject.IHandler>(() => new MemoryDataObjectHandler());
 			p.Add<OpenWithDialog.IHandler>(() => new OpenWithDialogHandler());
 			p.Add<Notification.IHandler>(() => new NotificationHandler());
 			p.Add<TrayIndicator.IHandler>(() => new TrayIndicatorHandler());
+			p.Add<DataFormats.IHandler>(() => new DataFormatsHandler());
+			p.Add<Taskbar.IHandler>(() => new TaskbarHandler());
+			p.Add<Window.IWindowHandler>(() => new WindowHandler());
+			p.Add<Themes.IHandler>(() => new ThemesHandler());
 
 			// IO
 			p.Add<SystemIcons.IHandler>(() => new SystemIconsHandler());
 
 			// General
 			p.Add<EtoEnvironment.IHandler>(() => new EtoEnvironmentHandler());
-			p.Add<Thread.IHandler>(() => new ThreadHandler());
+			p.Add<Eto.Threading.Thread.IHandler>(() => new ThreadHandler());
 		}
 
 		public override IDisposable ThreadStart()
 		{
 			return new NSAutoreleasePool();
 		}
+		
+		public bool RequireAppBundle { get; set; }
 
 		public override bool IsValid
 		{
 			get
 			{
-				var assembly = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
-
-				var assemblyDir = Path.GetDirectoryName(assembly.Location);
-				// location will be empty when embedded via mkbundle, ensure bundlepath is an .app bundle
-				if (string.IsNullOrEmpty(assemblyDir))
-					return NSBundle.MainBundle?.BundlePath.EndsWith(".app", StringComparison.Ordinal) == true;
-
-				return NSBundle.MainBundle != null && assembly.Location.StartsWith(NSBundle.MainBundle.BundlePath, StringComparison.Ordinal);
+				if (NSApplication.SharedApplication == null)
+					return false;
+				if (!RequireAppBundle)
+					return true;
+					
+				var bundle = NSBundle.MainBundle;
+				if (bundle == null)
+					return false;
+				if (!bundle.BundlePath.EndsWith(".app", StringComparison.Ordinal))
+					return false;
+				if (!bundle.IsLoaded)
+					return false;
+				return true;
 			}
 		}
 

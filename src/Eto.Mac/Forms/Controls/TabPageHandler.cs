@@ -1,35 +1,3 @@
-using System;
-using Eto.Forms;
-using Eto.Drawing;
-
-#if XAMMAC2
-using AppKit;
-using Foundation;
-using CoreGraphics;
-using ObjCRuntime;
-using CoreAnimation;
-#else
-using MonoMac.AppKit;
-using MonoMac.Foundation;
-using MonoMac.CoreGraphics;
-using MonoMac.ObjCRuntime;
-using MonoMac.CoreAnimation;
-#if Mac64
-using nfloat = System.Double;
-using nint = System.Int64;
-using nuint = System.UInt64;
-#else
-using nfloat = System.Single;
-using nint = System.Int32;
-using nuint = System.UInt32;
-#endif
-#if SDCOMPAT
-using CGSize = System.Drawing.SizeF;
-using CGRect = System.Drawing.RectangleF;
-using CGPoint = System.Drawing.PointF;
-#endif
-#endif
-
 namespace Eto.Mac.Forms.Controls
 {
 	public class TabPageHandler : MacPanel<NSTabViewItem, TabPage, TabPage.ICallback>, TabPage.IHandler
@@ -48,9 +16,10 @@ namespace Eto.Mac.Forms.Controls
 
 			public override void DrawLabel(bool shouldTruncateLabel, CGRect labelRect)
 			{
-				if (Handler.image != null)
+				var h = Handler;
+				if (h?.image != null)
 				{
-					var nsimage = (NSImage)Handler.image.ControlObject;
+					var nsimage = (NSImage)h.image.ControlObject;
 
 					if (nsimage.RespondsToSelector(new Selector(selDrawInRectFromRectOperationFractionRespectFlippedHints)))
 						nsimage.Draw(new CGRect(labelRect.X, labelRect.Y, labelRect.Height, labelRect.Height), new CGRect(CGPoint.Empty, nsimage.Size), NSCompositingOperation.SourceOver, 1, true, null);
@@ -72,7 +41,7 @@ namespace Eto.Mac.Forms.Controls
 			public override CGSize SizeOfLabel(bool computeMin)
 			{
 				var size = base.SizeOfLabel(computeMin);
-				if (Handler.image != null)
+				if (Handler?.image != null)
 				{
 					size.Width += size.Height + ICON_PADDING;
 				}
@@ -95,7 +64,7 @@ namespace Eto.Mac.Forms.Controls
 		public string Text
 		{
 			get { return Control.Label; }
-			set { Control.Label = value; }
+			set { Control.Label = value ?? string.Empty; }
 		}
 
 		public Image Image
@@ -111,5 +80,22 @@ namespace Eto.Mac.Forms.Controls
 		}
 
 		public override NSView ContentControl => Control.View;
+
+		bool visible = true;
+
+		public override bool Visible
+		{
+			get => visible;
+			set
+			{
+				if (visible == value)
+					return;
+				visible = value;
+				(Widget.Parent?.Handler as TabControlHandler)?.SetPageVisible(Widget, value);
+				InvalidateMeasure();
+				if (Widget.Loaded && value)
+					FireOnShown();
+			}
+		}
 	}
 }

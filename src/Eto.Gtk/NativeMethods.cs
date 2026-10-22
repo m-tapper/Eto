@@ -1,7 +1,4 @@
-﻿﻿
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
+﻿
 using GLib;
 using Gdk;
 
@@ -15,18 +12,102 @@ namespace Eto.GtkSharp
 		const string ver = "3";
 #endif
 
+		public enum FcSetName : int
+		{
+		    FcSetSystem = 0,
+	    	FcSetApplication = 1
+		}
+
+		[StructLayout(LayoutKind.Sequential)]
+		public struct FcFontSet
+		{
+	    	public int		nfont;
+	    	public int		sfont;
+	    	public IntPtr	fonts;
+		}
+		
+		public enum WebKitUserContentInjectedFrames : int
+		{
+			WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES = 0,
+			WEBKIT_USER_CONTENT_INJECT_TOP_FRAME = 1
+		}
+		
+		public enum WebKitUserScriptInjectionTime : int
+		{
+			WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START = 0,
+			WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END = 1
+		}
+		
+		// GdkAnchorHints / GdkGravity values. move_to_rect isn't exposed by the
+		// GtkSharp managed binding, so it's P/Invoked here. This lives in the
+		// non-generic type because [DllImport] can't be applied inside a generic
+		// class (CS7042).
+		[Flags]
+		public enum Gravity : int
+		{
+			GDK_GRAVITY_NORTH_WEST = 1
+		}
+		
+		[Flags]
+		public enum AnchorHint : int
+		{
+			None = 0,
+			GDK_ANCHOR_SLIDE_X = 1 << 2,
+			GDK_ANCHOR_SLIDE_Y = 1 << 3,
+			GDK_ANCHOR_FLIP_X = 1 << 4,
+			GDK_ANCHOR_FLIP_Y = 1 << 5,
+			GDK_ANCHOR_RESIZE_X = 1 << 6,
+			GDK_ANCHOR_RESIZE_Y = 1 << 7
+		}
+		
+		[StructLayout(LayoutKind.Sequential)]
+		public struct GdkRect { public int X, Y, Width, Height; }
+
+
+
 		static class NMWindows
 		{
+
+#if NET
+
+			static NMWindows()
+			{
+				DllImportResolverManager.Add((name, assembly, path) =>
+				{
+					// Use custom import resolver for libwebkit2gtk
+					// Try loading 4.1 first, if that fails, return to default handling
+					if (name == libwebkit) 
+					{
+						IntPtr result = IntPtr.Zero;
+						if (!NativeLibrary.TryLoad("libwebkit2gtk-4.1.so.0", assembly, path, out result))
+						{
+							return IntPtr.Zero;
+						}
+
+						return result;
+					}
+
+					return IntPtr.Zero;
+				});
+			}
+#endif
+
 #if GTK2
 			const string plat = "win32-";
 #elif GTK3
 			const string plat = "";
 #endif
 			const string ext = "-0.dll";
+			const string extalt = ".dll";
 			const string libgobject = "libgobject-2.0" + ext;
 			const string libgtk = "libgtk-" + plat + ver + ext;
 			const string libgdk = "libgdk-" + plat + ver + ext;
+			const string libpango = "libpango-1.0" + ext;
+			const string libpangocairo = "libpangocairo-1.0" + ext;
+			const string libpangoft2 = "libpangoft2-1.0" + ext;
+			const string libfontconfig = "libfontconfig" + extalt;
 			const string libwebkit = "libwebkit2gtk-4.0.so.37";
+			const string libjavascriptcore = "libjavascriptcoregtk-4.1.so.0";
 
 			[DllImport(libgobject, CallingConvention = CallingConvention.Cdecl)]
 			public extern static void g_signal_stop_emission_by_name(IntPtr instance, string name);
@@ -93,6 +174,27 @@ namespace Eto.GtkSharp
 
 			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
 			public extern static IntPtr webkit_uri_request_get_uri(IntPtr request);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr webkit_web_view_get_user_content_manager(IntPtr web_view);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void webkit_user_content_manager_add_script(IntPtr manager, IntPtr script);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static bool webkit_user_content_manager_register_script_message_handler(IntPtr manager, string name);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr webkit_user_script_new(string source, WebKitUserContentInjectedFrames injected_frames, WebKitUserScriptInjectionTime injection_time, string whitelist, string blacklist);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr webkit_javascript_result_get_type();
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr webkit_javascript_result_get_js_value(IntPtr js_result);
+
+			[DllImport(libjavascriptcore, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr jsc_value_to_string (IntPtr value);
 
 			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
 			public extern static bool gtk_clipboard_wait_for_targets(IntPtr cp, out IntPtr atoms, out int number);
@@ -163,22 +265,103 @@ namespace Eto.GtkSharp
 			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
 			public extern static void gtk_print_unix_dialog_set_embed_page_setup(IntPtr raw, bool embed);
 
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr gtk_grid_get_child_at(IntPtr raw, int left, int top);
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr gtk_button_get_event_window(IntPtr button);
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static uint gtk_get_major_version();
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static uint gtk_get_minor_version();
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static uint gtk_get_micro_version();
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void gtk_grab_add(IntPtr widget);
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void gtk_grab_remove(IntPtr widget);
+
 			[DllImport(libgdk, CallingConvention = CallingConvention.Cdecl)]
 			public extern static bool gdk_cairo_get_clip_rectangle(IntPtr context, IntPtr rect);
+
+			[DllImport(libgdk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr gdk_get_default_root_window();
+
+			[DllImport(libgdk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr gdk_pixbuf_get_from_window(IntPtr window, int x, int y, int width, int height);
+
+			[DllImport(libgdk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void gdk_window_move_to_rect(IntPtr window, ref GdkRect rect, Gravity rect_anchor, Gravity window_anchor, AnchorHint anchor_hints, int rect_anchor_dx, int rect_anchor_dy);
+			[DllImport(libpango, CallingConvention = CallingConvention.Cdecl)]
+			public extern static bool pango_font_has_char(IntPtr font, int wc);
+			[DllImport(libpangocairo, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr pango_cairo_font_map_new();
+			[DllImport(libpangocairo, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void pango_cairo_font_map_set_default(IntPtr fontMap);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr pango_fc_font_description_from_pattern(IntPtr fcpattern, bool includeSize);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr pango_fc_font_get_pattern(IntPtr font);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static bool FcInit();
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr FcConfigGetCurrent();
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static bool FcConfigAppFontAddFile(IntPtr fc, string fileName);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr FcConfigGetFonts(IntPtr fc, FcSetName setName);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static int FcPatternGetString(IntPtr p, string objectname, int n, out IntPtr s);
 		}
 
 		static class NMLinux
 		{
+
+#if NET
+
+			static NMLinux()
+			{
+				DllImportResolverManager.Add((name, assembly, path) =>
+				{
+					// Use custom import resolver for libwebkit2gtk
+					// Try loading 4.1 first, if that fails, return to default handling
+					if (name == libwebkit) 
+					{
+						IntPtr result = IntPtr.Zero;
+						if (!NativeLibrary.TryLoad("libwebkit2gtk-4.1.so.0", assembly, path, out result))
+						{
+							return IntPtr.Zero;
+						}
+
+						return result;
+					}
+
+					return IntPtr.Zero;
+				});
+			}
+#endif
+
 #if GTK2
 			const string plat = "x11-";
 #elif GTK3
 			const string plat = "";
 #endif
 			const string ext = ".so.0";
+			const string extalt = ".so.1";
 			const string libgobject = "libgobject-2.0" + ext;
 			const string libgtk = "libgtk-" + plat + ver + ext;
 			const string libgdk = "libgdk-" + plat + ver + ext;
+			const string libpango = "libpango-1.0" + ext;
+			const string libpangocairo = "libpangocairo-1.0" + ext;
+			const string libpangoft2 = "libpangoft2-1.0" + ext;
+			const string libfontconfig = "libfontconfig" + extalt;
 			const string libwebkit = "libwebkit2gtk-4.0.so.37";
+			const string libjavascriptcore = "libjavascriptcoregtk-4.1.so.0";
 
 			[DllImport(libgobject, CallingConvention = CallingConvention.Cdecl)]
 			public extern static void g_signal_stop_emission_by_name(IntPtr instance, string name);
@@ -245,6 +428,27 @@ namespace Eto.GtkSharp
 
 			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
 			public extern static IntPtr webkit_uri_request_get_uri(IntPtr request);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr webkit_web_view_get_user_content_manager(IntPtr web_view);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void webkit_user_content_manager_add_script(IntPtr manager, IntPtr script);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static bool webkit_user_content_manager_register_script_message_handler(IntPtr manager, string name);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr webkit_user_script_new(string source, WebKitUserContentInjectedFrames injected_frames, WebKitUserScriptInjectionTime injection_time, string whitelist, string blacklist);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr webkit_javascript_result_get_type();
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr webkit_javascript_result_get_js_value(IntPtr js_result);
+
+			[DllImport(libjavascriptcore, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr jsc_value_to_string (IntPtr value);
 
 			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
 			public extern static bool gtk_clipboard_wait_for_targets(IntPtr cp, out IntPtr atoms, out int number);
@@ -315,22 +519,103 @@ namespace Eto.GtkSharp
 			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
 			public extern static void gtk_print_unix_dialog_set_embed_page_setup(IntPtr raw, bool embed);
 
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr gtk_grid_get_child_at(IntPtr raw, int left, int top);
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr gtk_button_get_event_window(IntPtr button);
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static uint gtk_get_major_version();
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static uint gtk_get_minor_version();
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static uint gtk_get_micro_version();
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void gtk_grab_add(IntPtr widget);
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void gtk_grab_remove(IntPtr widget);
+
 			[DllImport(libgdk, CallingConvention = CallingConvention.Cdecl)]
 			public extern static bool gdk_cairo_get_clip_rectangle(IntPtr context, IntPtr rect);
+
+			[DllImport(libgdk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr gdk_get_default_root_window();
+
+			[DllImport(libgdk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr gdk_pixbuf_get_from_window(IntPtr window, int x, int y, int width, int height);
+
+			[DllImport(libgdk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void gdk_window_move_to_rect(IntPtr window, ref GdkRect rect, Gravity rect_anchor, Gravity window_anchor, AnchorHint anchor_hints, int rect_anchor_dx, int rect_anchor_dy);
+			[DllImport(libpango, CallingConvention = CallingConvention.Cdecl)]
+			public extern static bool pango_font_has_char(IntPtr font, int wc);
+			[DllImport(libpangocairo, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr pango_cairo_font_map_new();
+			[DllImport(libpangocairo, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void pango_cairo_font_map_set_default(IntPtr fontMap);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr pango_fc_font_description_from_pattern(IntPtr fcpattern, bool includeSize);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr pango_fc_font_get_pattern(IntPtr font);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static bool FcInit();
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr FcConfigGetCurrent();
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static bool FcConfigAppFontAddFile(IntPtr fc, string fileName);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr FcConfigGetFonts(IntPtr fc, FcSetName setName);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static int FcPatternGetString(IntPtr p, string objectname, int n, out IntPtr s);
 		}
 
 		static class NMMac
 		{
+
+#if NET
+
+			static NMMac()
+			{
+				DllImportResolverManager.Add((name, assembly, path) =>
+				{
+					// Use custom import resolver for libwebkit2gtk
+					// Try loading 4.1 first, if that fails, return to default handling
+					if (name == libwebkit) 
+					{
+						IntPtr result = IntPtr.Zero;
+						if (!NativeLibrary.TryLoad("libwebkit2gtk-4.1.so.0", assembly, path, out result))
+						{
+							return IntPtr.Zero;
+						}
+
+						return result;
+					}
+
+					return IntPtr.Zero;
+				});
+			}
+#endif
+
 #if GTK2
 			const string plat = "quartz-";
 #elif GTK3
 			const string plat = "";
 #endif
 			const string ext = ".dylib";
+			const string extalt = ".dylib";
 			const string libgobject = "libgobject-2.0" + ext;
 			const string libgtk = "libgtk-" + plat + ver + ext;
 			const string libgdk = "libgdk-" + plat + ver + ext;
+			const string libpango = "libpango-1.0" + ext;
+			const string libpangocairo = "libpangocairo-1.0" + ext;
+			const string libpangoft2 = "libpangoft2-1.0" + ext;
+			const string libfontconfig = "libfontconfig" + extalt;
 			const string libwebkit = "libwebkit2gtk-4.0.so.37";
+			const string libjavascriptcore = "libjavascriptcoregtk-4.1.so.0";
 
 			[DllImport(libgobject, CallingConvention = CallingConvention.Cdecl)]
 			public extern static void g_signal_stop_emission_by_name(IntPtr instance, string name);
@@ -397,6 +682,27 @@ namespace Eto.GtkSharp
 
 			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
 			public extern static IntPtr webkit_uri_request_get_uri(IntPtr request);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr webkit_web_view_get_user_content_manager(IntPtr web_view);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void webkit_user_content_manager_add_script(IntPtr manager, IntPtr script);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static bool webkit_user_content_manager_register_script_message_handler(IntPtr manager, string name);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr webkit_user_script_new(string source, WebKitUserContentInjectedFrames injected_frames, WebKitUserScriptInjectionTime injection_time, string whitelist, string blacklist);
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr webkit_javascript_result_get_type();
+
+			[DllImport(libwebkit, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr webkit_javascript_result_get_js_value(IntPtr js_result);
+
+			[DllImport(libjavascriptcore, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr jsc_value_to_string (IntPtr value);
 
 			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
 			public extern static bool gtk_clipboard_wait_for_targets(IntPtr cp, out IntPtr atoms, out int number);
@@ -467,8 +773,58 @@ namespace Eto.GtkSharp
 			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
 			public extern static void gtk_print_unix_dialog_set_embed_page_setup(IntPtr raw, bool embed);
 
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr gtk_grid_get_child_at(IntPtr raw, int left, int top);
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr gtk_button_get_event_window(IntPtr button);
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static uint gtk_get_major_version();
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static uint gtk_get_minor_version();
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static uint gtk_get_micro_version();
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void gtk_grab_add(IntPtr widget);
+
+			[DllImport(libgtk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void gtk_grab_remove(IntPtr widget);
+
 			[DllImport(libgdk, CallingConvention = CallingConvention.Cdecl)]
 			public extern static bool gdk_cairo_get_clip_rectangle(IntPtr context, IntPtr rect);
+
+			[DllImport(libgdk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr gdk_get_default_root_window();
+
+			[DllImport(libgdk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr gdk_pixbuf_get_from_window(IntPtr window, int x, int y, int width, int height);
+
+			[DllImport(libgdk, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void gdk_window_move_to_rect(IntPtr window, ref GdkRect rect, Gravity rect_anchor, Gravity window_anchor, AnchorHint anchor_hints, int rect_anchor_dx, int rect_anchor_dy);
+			[DllImport(libpango, CallingConvention = CallingConvention.Cdecl)]
+			public extern static bool pango_font_has_char(IntPtr font, int wc);
+			[DllImport(libpangocairo, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr pango_cairo_font_map_new();
+			[DllImport(libpangocairo, CallingConvention = CallingConvention.Cdecl)]
+			public extern static void pango_cairo_font_map_set_default(IntPtr fontMap);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr pango_fc_font_description_from_pattern(IntPtr fcpattern, bool includeSize);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr pango_fc_font_get_pattern(IntPtr font);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static bool FcInit();
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr FcConfigGetCurrent();
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static bool FcConfigAppFontAddFile(IntPtr fc, string fileName);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static IntPtr FcConfigGetFonts(IntPtr fc, FcSetName setName);
+			[DllImport(libpangoft2, CallingConvention = CallingConvention.Cdecl)]
+			public extern static int FcPatternGetString(IntPtr p, string objectname, int n, out IntPtr s);
 		}
 
 		public static string GetString(IntPtr handle)
@@ -725,6 +1081,76 @@ namespace Eto.GtkSharp
 				NMWindows.gtk_print_unix_dialog_set_embed_page_setup(raw, embed);
 		}
 
+		public static IntPtr gtk_grid_get_child_at(IntPtr raw, int left, int top)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.gtk_grid_get_child_at(raw, left, top);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.gtk_grid_get_child_at(raw, left, top);
+			else
+				return NMWindows.gtk_grid_get_child_at(raw, left, top);
+		}
+
+		public static IntPtr gtk_button_get_event_window(IntPtr button)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.gtk_button_get_event_window(button);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.gtk_button_get_event_window(button);
+			else
+				return NMWindows.gtk_button_get_event_window(button);
+		}
+
+		public static uint gtk_get_major_version()
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.gtk_get_major_version();
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.gtk_get_major_version();
+			else
+				return NMWindows.gtk_get_major_version();
+		}
+
+		public static uint gtk_get_minor_version()
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.gtk_get_minor_version();
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.gtk_get_minor_version();
+			else
+				return NMWindows.gtk_get_minor_version();
+		}
+
+		public static uint gtk_get_micro_version()
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.gtk_get_micro_version();
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.gtk_get_micro_version();
+			else
+				return NMWindows.gtk_get_micro_version();
+		}
+
+		public static void gtk_grab_add(IntPtr widget)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				NMLinux.gtk_grab_add(widget);
+			else if (EtoEnvironment.Platform.IsMac)
+				NMMac.gtk_grab_add(widget);
+			else
+				NMWindows.gtk_grab_add(widget);
+		}
+
+		public static void gtk_grab_remove(IntPtr widget)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				NMLinux.gtk_grab_remove(widget);
+			else if (EtoEnvironment.Platform.IsMac)
+				NMMac.gtk_grab_remove(widget);
+			else
+				NMWindows.gtk_grab_remove(widget);
+		}
+
 		public static IntPtr webkit_web_view_new()
 		{
 			if (EtoEnvironment.Platform.IsLinux)
@@ -935,6 +1361,76 @@ namespace Eto.GtkSharp
 				return GetString(NMWindows.webkit_uri_request_get_uri(request));
 		}
 
+		public static IntPtr webkit_web_view_get_user_content_manager(IntPtr web_view)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.webkit_web_view_get_user_content_manager(web_view);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.webkit_web_view_get_user_content_manager(web_view);
+			else
+				return NMWindows.webkit_web_view_get_user_content_manager(web_view);
+		}
+
+		public static void webkit_user_content_manager_add_script(IntPtr manager, IntPtr script)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				NMLinux.webkit_user_content_manager_add_script(manager, script);
+			else if (EtoEnvironment.Platform.IsMac)
+				NMMac.webkit_user_content_manager_add_script(manager, script);
+			else
+				NMWindows.webkit_user_content_manager_add_script(manager, script);
+		}
+
+		public static bool webkit_user_content_manager_register_script_message_handler(IntPtr manager, string name)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.webkit_user_content_manager_register_script_message_handler(manager, name);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.webkit_user_content_manager_register_script_message_handler(manager, name);
+			else
+				return NMWindows.webkit_user_content_manager_register_script_message_handler(manager, name);
+		}
+
+		public static IntPtr webkit_user_script_new(string source, WebKitUserContentInjectedFrames injected_frames, WebKitUserScriptInjectionTime injection_time, string whitelist, string blacklist)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.webkit_user_script_new(source, injected_frames, injection_time, whitelist, blacklist);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.webkit_user_script_new(source, injected_frames, injection_time, whitelist, blacklist);
+			else
+				return NMWindows.webkit_user_script_new(source, injected_frames, injection_time, whitelist, blacklist);
+		}
+
+		public static IntPtr webkit_javascript_result_get_type()
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.webkit_javascript_result_get_type();
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.webkit_javascript_result_get_type();
+			else
+				return NMWindows.webkit_javascript_result_get_type();
+		}
+
+		public static IntPtr webkit_javascript_result_get_js_value(IntPtr js_result)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.webkit_javascript_result_get_js_value(js_result);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.webkit_javascript_result_get_js_value(js_result);
+			else
+				return NMWindows.webkit_javascript_result_get_js_value(js_result);
+		}
+
+		public static string jsc_value_to_string (IntPtr value)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return GetString(NMLinux.jsc_value_to_string(value));
+			else if (EtoEnvironment.Platform.IsMac)
+				return GetString(NMMac.jsc_value_to_string(value));
+			else
+				return GetString(NMWindows.jsc_value_to_string(value));
+		}
+
 		public static bool gdk_cairo_get_clip_rectangle(IntPtr context, IntPtr rect)
 		{
 			if (EtoEnvironment.Platform.IsLinux)
@@ -943,6 +1439,136 @@ namespace Eto.GtkSharp
 				return NMMac.gdk_cairo_get_clip_rectangle(context, rect);
 			else
 				return NMWindows.gdk_cairo_get_clip_rectangle(context, rect);
+		}
+
+		public static IntPtr gdk_get_default_root_window()
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.gdk_get_default_root_window();
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.gdk_get_default_root_window();
+			else
+				return NMWindows.gdk_get_default_root_window();
+		}
+
+		public static IntPtr gdk_pixbuf_get_from_window(IntPtr window, int x, int y, int width, int height)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.gdk_pixbuf_get_from_window(window, x, y, width, height);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.gdk_pixbuf_get_from_window(window, x, y, width, height);
+			else
+				return NMWindows.gdk_pixbuf_get_from_window(window, x, y, width, height);
+		}
+
+		public static void gdk_window_move_to_rect(IntPtr window, ref GdkRect rect, Gravity rect_anchor, Gravity window_anchor, AnchorHint anchor_hints, int rect_anchor_dx, int rect_anchor_dy)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				NMLinux.gdk_window_move_to_rect(window, ref rect, rect_anchor, window_anchor, anchor_hints, rect_anchor_dx, rect_anchor_dy);
+			else if (EtoEnvironment.Platform.IsMac)
+				NMMac.gdk_window_move_to_rect(window, ref rect, rect_anchor, window_anchor, anchor_hints, rect_anchor_dx, rect_anchor_dy);
+			else
+				NMWindows.gdk_window_move_to_rect(window, ref rect, rect_anchor, window_anchor, anchor_hints, rect_anchor_dx, rect_anchor_dy);
+		}
+
+		public static bool pango_font_has_char(IntPtr font, int wc)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.pango_font_has_char(font, wc);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.pango_font_has_char(font, wc);
+			else
+				return NMWindows.pango_font_has_char(font, wc);
+		}
+
+		public static IntPtr pango_cairo_font_map_new()
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.pango_cairo_font_map_new();
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.pango_cairo_font_map_new();
+			else
+				return NMWindows.pango_cairo_font_map_new();
+		}
+
+		public static void pango_cairo_font_map_set_default(IntPtr fontMap)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				NMLinux.pango_cairo_font_map_set_default(fontMap);
+			else if (EtoEnvironment.Platform.IsMac)
+				NMMac.pango_cairo_font_map_set_default(fontMap);
+			else
+				NMWindows.pango_cairo_font_map_set_default(fontMap);
+		}
+
+		public static IntPtr pango_fc_font_description_from_pattern(IntPtr fcpattern, bool includeSize)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.pango_fc_font_description_from_pattern(fcpattern, includeSize);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.pango_fc_font_description_from_pattern(fcpattern, includeSize);
+			else
+				return NMWindows.pango_fc_font_description_from_pattern(fcpattern, includeSize);
+		}
+
+		public static IntPtr pango_fc_font_get_pattern(IntPtr font)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.pango_fc_font_get_pattern(font);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.pango_fc_font_get_pattern(font);
+			else
+				return NMWindows.pango_fc_font_get_pattern(font);
+		}
+
+		public static bool FcInit()
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.FcInit();
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.FcInit();
+			else
+				return NMWindows.FcInit();
+		}
+
+		public static IntPtr FcConfigGetCurrent()
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.FcConfigGetCurrent();
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.FcConfigGetCurrent();
+			else
+				return NMWindows.FcConfigGetCurrent();
+		}
+
+		public static bool FcConfigAppFontAddFile(IntPtr fc, string fileName)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.FcConfigAppFontAddFile(fc, fileName);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.FcConfigAppFontAddFile(fc, fileName);
+			else
+				return NMWindows.FcConfigAppFontAddFile(fc, fileName);
+		}
+
+		public static IntPtr FcConfigGetFonts(IntPtr fc, FcSetName setName)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.FcConfigGetFonts(fc, setName);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.FcConfigGetFonts(fc, setName);
+			else
+				return NMWindows.FcConfigGetFonts(fc, setName);
+		}
+
+		public static int FcPatternGetString(IntPtr p, string objectname, int n, out IntPtr s)
+		{
+			if (EtoEnvironment.Platform.IsLinux)
+				return NMLinux.FcPatternGetString(p, objectname, n, out s);
+			else if (EtoEnvironment.Platform.IsMac)
+				return NMMac.FcPatternGetString(p, objectname, n, out s);
+			else
+				return NMWindows.FcPatternGetString(p, objectname, n, out s);
 		}
 	}
 }

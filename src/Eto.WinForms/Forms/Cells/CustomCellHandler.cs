@@ -1,8 +1,3 @@
-using System;
-using swf = System.Windows.Forms;
-using sd = System.Drawing;
-using Eto.Forms;
-using Eto.Drawing;
 using Eto.WinForms.Drawing;
 
 namespace Eto.WinForms.Forms.Cells
@@ -11,35 +6,21 @@ namespace Eto.WinForms.Forms.Cells
 	{
 		public class EtoEditType : swf.Control, swf.IDataGridViewEditingControl
 		{
-			public swf.DataGridView EditingControlDataGridView
-			{
-				get; set;
-			}
+			public EtoCell Cell { get; set; }
 
-			public object EditingControlFormattedValue
+			public EtoEditType()
 			{
-				get; set;
 			}
+			public swf.DataGridView EditingControlDataGridView { get; set; }
 
-			public int EditingControlRowIndex
-			{
-				get; set;
-			}
+			public object EditingControlFormattedValue { get; set; }
+			public int EditingControlRowIndex { get; set; }
 
-			public bool EditingControlValueChanged
-			{
-				get; set;
-			}
+			public bool EditingControlValueChanged { get; set; } = true;
 
-			public swf.Cursor EditingPanelCursor
-			{
-				get { return swf.Cursors.Default; }
-			}
+			public swf.Cursor EditingPanelCursor => swf.Cursors.Default;
 
-			public bool RepositionEditingControlOnValueChange
-			{
-				get { return false; }
-			}
+			public bool RepositionEditingControlOnValueChange => false;
 
 			public void ApplyCellStyleToEditingControl(swf.DataGridViewCellStyle dataGridViewCellStyle)
 			{
@@ -57,20 +38,37 @@ namespace Eto.WinForms.Forms.Cells
 
 			public void PrepareEditingControlForEdit(bool selectAll)
 			{
+				Controls.Clear();
+				if (Cell == null)
+					return;
+				var h = Cell.Handler;
+				var args = Cell.CreateArgs(EditingControlRowIndex);
+				var control = h.Callback.OnCreateCell(h.Widget, args);
+				h.Callback.OnConfigureCell(h.Widget, args, control);
+				var native = control.ToNative(true);
+				if (native != null)
+				{
+					native.Dock = swf.DockStyle.Fill;
+					Controls.Add(native);
+				}
 			}
 		}
-		public class EtoCell : swf.DataGridViewTextBoxCell
+		public class EtoCell : swf.DataGridViewCell
 		{
 			public CustomCellHandler Handler { get; set; }
 
-			public override Type EditType
-			{
-				get { return typeof(EtoEditType); }
-			}
+			public override Type EditType => typeof(EtoEditType);
+
+			public override Type FormattedValueType => typeof(object);
 
 			public override void InitializeEditingControl(int rowIndex, object initialFormattedValue, swf.DataGridViewCellStyle dataGridViewCellStyle)
 			{
 				base.InitializeEditingControl(rowIndex, initialFormattedValue, dataGridViewCellStyle);
+				if (DataGridView.EditingControl is EtoEditType editType)
+				{
+					editType.Cell = this;
+				}
+
 			}
 
 			public override void PositionEditingControl(bool setLocation, bool setSize, sd.Rectangle cellBounds, sd.Rectangle cellClip, swf.DataGridViewCellStyle cellStyle, bool singleVerticalBorderAdded, bool singleHorizontalBorderAdded, bool isFirstDisplayedColumn, bool isFirstDisplayedRow)
@@ -79,10 +77,26 @@ namespace Eto.WinForms.Forms.Cells
 				base.PositionEditingControl(setLocation, setSize, cellBounds, cellClip, cellStyle, singleVerticalBorderAdded, singleHorizontalBorderAdded, isFirstDisplayedColumn, isFirstDisplayedRow);
 			}
 
+			public CellEventArgs CreateArgs(int rowIndex)
+			{
+				var gridHandler = Handler?.GridHandler;
+				if (gridHandler == null)
+					return null;
+				var item = gridHandler.GetItemAtRow(rowIndex);
+				return new CellEventArgs(gridHandler.Grid, Handler.Widget, rowIndex, ColumnIndex, item, CellStates.None, null);
+			}
+
 			protected override sd.Size GetPreferredSize(sd.Graphics graphics, swf.DataGridViewCellStyle cellStyle, int rowIndex, sd.Size constraintSize)
 			{
 				var size = base.GetPreferredSize(graphics, cellStyle, rowIndex, constraintSize);
-				size.Width += Handler.GetRowOffset(rowIndex);
+				var gridHandler = Handler.GridHandler;
+				if (gridHandler != null)
+				{
+					var args = CreateArgs(rowIndex);
+					size.Width = (int)Math.Ceiling(Handler.Callback.OnGetPreferredWidth(Handler.Widget, args));
+					size.Width += Handler.GetRowOffset(rowIndex);
+					size.Width = DataGridView.LogicalToDeviceUnits(size.Width);
+				}
 				return size;
 			}
 
@@ -93,24 +107,36 @@ namespace Eto.WinForms.Forms.Cells
 
 			protected override void Paint(sd.Graphics graphics, sd.Rectangle clipBounds, sd.Rectangle cellBounds, int rowIndex, swf.DataGridViewElementStates cellState, object value, object formattedValue, string errorText, swf.DataGridViewCellStyle cellStyle, swf.DataGridViewAdvancedBorderStyle advancedBorderStyle, swf.DataGridViewPaintParts paintParts)
 			{
+				Handler.Paint(graphics, clipBounds, ref cellBounds, rowIndex, cellState, value, formattedValue, errorText, cellStyle, advancedBorderStyle, ref paintParts);
+
 				// save graphics state to prevent artifacts in other paint operations in the grid
 				var state = graphics.Save();
+				GraphicsHandler handler;
 				if (!ReferenceEquals(cachedGraphicsKey, graphics) || cachedGraphics == null)
 				{
 					cachedGraphicsKey = graphics;
-					cachedGraphics = new Graphics(new GraphicsHandler(graphics, dispose: false));
+					cachedGraphics = new Graphics(handler = new GraphicsHandler(graphics, dispose: false));
 				}
 				else
 				{
-					((GraphicsHandler)cachedGraphics.Handler).SetInitialState();
+					handler = (GraphicsHandler)cachedGraphics.Handler;
+					handler.SetInitialState();
 				}
+
+				var offset = graphics.PixelOffsetMode;
 				graphics.PixelOffsetMode = sd.Drawing2D.PixelOffsetMode.Half;
 				graphics.SetClip(cellBounds);
 				var color = new sd.SolidBrush(cellState.HasFlag(swf.DataGridViewElementStates.Selected) ? cellStyle.SelectionBackColor : cellStyle.BackColor);
-                graphics.FillRectangle(color, cellBounds);
-				var args = new CellPaintEventArgs(cachedGraphics, cellBounds.ToEto(), cellState.ToEto(), value);
+				graphics.FillRectangle(color, cellBounds);
+
+				handler.SaveTransform();
+				handler.SetDpiScale();
+				var logicalCellBounds = DataGridView?.DeviceUnitsToLogical(cellBounds) ?? cellBounds.ToEto();
+				var args = new CellPaintEventArgs(cachedGraphics, logicalCellBounds, cellState.ToEto(), value);
 				Handler.Callback.OnPaint(Handler.Widget, args);
+				handler.RestoreTransform();
 				graphics.ResetClip();
+				graphics.PixelOffsetMode = offset;
 				graphics.Restore(state);
 			}
 

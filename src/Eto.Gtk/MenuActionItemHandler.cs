@@ -1,5 +1,3 @@
-using System;
-using Eto.Forms;
 using Eto.GtkSharp.Forms.Menu;
 
 namespace Eto.GtkSharp
@@ -14,6 +12,12 @@ namespace Eto.GtkSharp
 		where TWidget: MenuItem
 		where TCallback: MenuItem.ICallback
 	{
+		protected override void Initialize()
+		{
+			base.Initialize();
+			Control.NoShowAll = true;
+		}
+
 		public override void AttachEvent(string id)
 		{
 			switch (id)
@@ -34,6 +38,12 @@ namespace Eto.GtkSharp
 
 		public void CreateFromCommand(Command command)
 		{
+		}
+
+		public bool Visible
+		{
+			get => Control.Visible;
+			set => Control.Visible = value;
 		}
 	}
 }

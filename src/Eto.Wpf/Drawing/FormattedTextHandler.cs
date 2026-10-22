@@ -1,0 +1,348 @@
+namespace Eto.Wpf.Drawing
+{
+	public class FormattedTextHandler : WidgetHandler<swm.FormattedText, FormattedText, FormattedText.ICallback>, FormattedText.IHandler
+	{
+		string _text;
+		SizeF _maxSize = SizeF.MaxValue;
+		FormattedTextWrapMode _wrap;
+		Font _font = SystemFonts.Default();
+		FormattedTextAlignment _alignment;
+		FormattedTextTrimming _trimming;
+		Brush _foregroundBrush;
+		bool _hasNewLines;
+		bool _shouldClip;
+		double? _pixelsPerDip;
+		swm.TextFormattingMode? _formattingMode;
+		swm.TextFormattingMode? _targetFormattingMode;
+		double _controlPixelsPerDip;
+		swm.TextFormattingMode _controlFormattingMode;
+
+		/// <summary>
+		/// Gets or sets the mode to lay this text out with, or null (the default) to use the mode of what it
+		/// is drawn on, falling back to the mode of its <see cref="Font"/>.
+		/// </summary>
+		/// <remarks>
+		/// <see cref="Measure"/> has to lay the text out before there is anything to draw it on, so a font
+		/// using <see cref="swm.TextFormattingMode.Display"/> measures with display metrics and is then laid
+		/// out again when it turns out to be drawn on something scaled.  Set this to measure and draw the
+		/// text the same way regardless - <see cref="swm.TextFormattingMode.Ideal"/> to be independent of
+		/// both the scale and the dpi.  It can be set from a style so drawing code doesn't have to reach for
+		/// the handler itself:
+		/// <code>Style.Add&lt;FormattedTextHandler&gt;("canvas", h => h.TextFormattingMode = TextFormattingMode.Ideal);</code>
+		/// </remarks>
+		public swm.TextFormattingMode? TextFormattingMode
+		{
+			get => _formattingMode;
+			set
+			{
+				_formattingMode = value;
+				ValidateTextFormatting();
+			}
+		}
+
+		public FormattedTextWrapMode Wrap
+		{
+			get => _wrap;
+			set
+			{
+				_wrap = value;
+				Invalidate();
+			}
+		}
+		public FormattedTextTrimming Trimming
+		{
+			get => _trimming;
+			set
+			{
+				_trimming = value;
+				if (Wrap == FormattedTextWrapMode.Character)
+					Invalidate();
+				else if (HasControl)
+					SetTrimming(Control);
+			}
+		}
+		public string Text
+		{
+			get => _text;
+			set
+			{
+				_text = value;
+				Invalidate();
+			}
+		}
+		public SizeF MaximumSize
+		{
+			get => _maxSize;
+			set
+			{
+				_maxSize = value;
+				if (HasControl)
+					SetMaxSize(Control);
+			}
+		}
+		public Font Font
+		{
+			get => _font;
+			set
+			{
+				_font = value;
+				ValidateTextFormatting();
+				if (HasControl)
+				{
+					SetFont(Control);
+					SetMaxSize(Control);
+				}
+			}
+		}
+		public Brush ForegroundBrush
+		{
+			get => _foregroundBrush ?? Brushes.Black;
+			set
+			{
+				_foregroundBrush = value;
+				if (HasControl)
+					SetForegroundBrush(Control);
+			}
+		}
+		public FormattedTextAlignment Alignment
+		{
+			get => _alignment;
+			set
+			{
+				_alignment = value;
+				if (HasControl)
+				{
+					SetTextAlignment(Control);
+					SetMaxSize(Control);
+				}
+			}
+		}
+
+		public SizeF Measure()
+		{
+			var control = Control;
+			double width = control.WidthIncludingTrailingWhitespace;
+			if (_shouldClip)
+				width = Math.Min(width, MaximumSize.Width);
+
+			return new SizeF((float)width, (float)control.Height);
+		}
+
+		void Invalidate()
+		{
+			Control = null;
+		}
+
+		/// <summary>
+		/// The mode to lay the text out with: what was asked for explicitly, otherwise the mode of what it is
+		/// drawn on, otherwise the mode of the font.
+		/// </summary>
+		swm.TextFormattingMode FormattingModeFor(FontHandler fontHandler)
+			=> _formattingMode ?? _targetFormattingMode ?? fontHandler.TextFormattingMode ?? swm.TextFormattingMode.Ideal;
+
+		/// <summary>
+		/// The formatting mode and dpi of a FormattedText can only be specified when it is created, so it has
+		/// to be recreated whenever either of them changes.
+		/// </summary>
+		void ValidateTextFormatting()
+		{
+			if (!HasControl || !(Font?.Handler is FontHandler fontHandler))
+				return;
+
+			if (FormattingModeFor(fontHandler) != _controlFormattingMode
+				|| (_pixelsPerDip ?? fontHandler.PixelsPerDip) != _controlPixelsPerDip)
+				Invalidate();
+		}
+
+		protected override swm.FormattedText CreateControl()
+		{
+			var font = Font;
+			var text = Text ?? string.Empty;
+			text = SetWrap(text);
+			_hasNewLines = text.IndexOf('\n') != -1;
+
+			var fontHandler = (FontHandler)font.Handler;
+			_controlFormattingMode = FormattingModeFor(fontHandler);
+			_controlPixelsPerDip = _pixelsPerDip ?? fontHandler.PixelsPerDip;
+
+			// decorations are applied to the entire text by SetFont below
+			var formattedText = fontHandler.CreateFormattedText(text, ForegroundBrush.ToWpf(), setDecorations: false, pixelsPerDip: _controlPixelsPerDip, formattingMode: _controlFormattingMode);
+
+			// support correctly showing ellipsis when there's a single line
+			if (Wrap == FormattedTextWrapMode.None)
+			{
+				if (!_hasNewLines)
+					formattedText.MaxLineCount = 1;
+				else
+				{
+					// can't show ellipsis when there's multiple lines currently..
+					formattedText.MaxLineCount = int.MaxValue;
+					_shouldClip = true;
+				}
+			}
+			SetTextAlignment(formattedText);
+			SetFont(formattedText);
+			SetTrimming(formattedText);
+			SetMaxSize(formattedText);
+			return formattedText;
+		}
+
+		string SetWrap(string text)
+		{
+			// character wrap only works with no trimming.
+			if ((Wrap == FormattedTextWrapMode.Character || Wrap == FormattedTextWrapMode.None) && Trimming == FormattedTextTrimming.None)
+			{
+				// wpf will always word wrap, so we replace spaces with nbsp
+				// so that it is forced to wrap at the character level
+				text = text.Replace(' ', (char)0xa0); // no break space
+			}
+			return text;
+		}
+
+		void SetTextAlignment(swm.FormattedText formattedText)
+		{
+			switch (Alignment)
+			{
+				case FormattedTextAlignment.Left:
+					formattedText.TextAlignment = sw.TextAlignment.Left;
+					break;
+				case FormattedTextAlignment.Right:
+					formattedText.TextAlignment = sw.TextAlignment.Right;
+					break;
+				case FormattedTextAlignment.Center:
+					formattedText.TextAlignment = sw.TextAlignment.Center;
+					break;
+				case FormattedTextAlignment.Justify:
+					formattedText.TextAlignment = sw.TextAlignment.Justify;
+					break;
+				default:
+					break;
+			}
+
+		}
+
+		void SetFont(swm.FormattedText formattedText)
+		{
+			formattedText.SetEtoFont(Font);
+		}
+
+		void SetMaxSize(swm.FormattedText formattedText)
+		{
+			if ((Alignment == FormattedTextAlignment.Left || MaximumSize.Width < float.MaxValue) && (Wrap != FormattedTextWrapMode.None || !_hasNewLines))
+				formattedText.MaxTextWidth = Math.Min(3579139, MaximumSize.Width);
+			else
+				formattedText.MaxTextWidth = formattedText.WidthIncludingTrailingWhitespace;
+			formattedText.MaxTextHeight = Math.Min(3579139, MaximumSize.Height);
+		}
+		void SetTrimming(swm.FormattedText formattedText)
+		{
+			switch (Trimming)
+			{
+				case FormattedTextTrimming.None:
+					formattedText.Trimming = sw.TextTrimming.None;
+					break;
+				case FormattedTextTrimming.CharacterEllipsis:
+					formattedText.Trimming = sw.TextTrimming.CharacterEllipsis;
+					break;
+				case FormattedTextTrimming.WordEllipsis:
+					formattedText.Trimming = sw.TextTrimming.WordEllipsis;
+					break;
+				default:
+					break;
+			}
+		}
+
+		void SetForegroundBrush(swm.FormattedText formattedText)
+		{
+			formattedText.SetForegroundBrush(ForegroundBrush.ToWpf());
+		}
+
+		public void DrawText(GraphicsHandler handler, PointF location)
+		{
+			// lay the text out for the dpi and formatting mode of what we're drawing on now that we know them,
+			// unless a mode was asked for explicitly - measuring has to agree with what is drawn
+			_pixelsPerDip = handler.TargetPixelsPerDip;
+			_targetFormattingMode = handler.TargetTextFormattingMode;
+			ValidateTextFormatting();
+
+			/**
+			//Doesn't do font fallbacks, so it isn't very useful at this point.
+			//Only other way appears to re-write the FormattedText class which comes along with a TON of code.
+			// if we can get font fallbacks working here, this might be a feasible way to support (fast) character wrapping
+			if (Wrap == FormattedTextWrapMode.Character)
+			{
+				var glyphRun = ConvertTextLinesToGlyphRun(Font.ToWpfTypeface(), Font.Size * 96.0 / 72.0, location.ToWpf(), Text);
+				if (glyphRun != null)
+					handler.Control.DrawGlyphRun(Brushes.Red.ToWpf(), glyphRun);
+			}
+			/**/
+			if (_shouldClip)
+			{
+				// a better way here would be to draw each line separately so alignment works on a per-paragraph basis
+				// but this is an edge case we don't fully support yet.
+				var rect = new sw.Rect(location.X, location.Y, Math.Min(MaximumSize.Width, Control.WidthIncludingTrailingWhitespace), Control.Height);
+				handler.Control.PushClip(new swm.RectangleGeometry(rect));
+				handler.Control.DrawText(Control, location.ToWpf());
+				handler.Control.Pop();
+			}
+			else
+				handler.Control.DrawText(Control, location.ToWpf());
+		}
+
+
+		swm.GlyphRun ConvertTextLinesToGlyphRun(swm.Typeface typeface, double fontSize, sw.Point location, string text)
+		{
+			var glyphIndices = new List<ushort>();
+			var advanceWidths = new List<double>();
+			var glyphOffsets = new List<sw.Point>();
+
+			if (!typeface.TryGetGlyphTypeface(out var glyphTypeface))
+				return null;
+
+			location.Y += glyphTypeface.Baseline * fontSize;
+			var y = 0.0;
+			var line = text;
+			var lineHeight = glyphTypeface.Height * fontSize;
+			var x = 0.0;
+
+			for (int i = 0; i < line.Length; ++i)
+			{
+				if (!glyphTypeface.CharacterToGlyphMap.TryGetValue(line[i], out var glyphIndex))
+					continue;
+
+				var advanceWidth = glyphTypeface.AdvanceWidths[glyphIndex] * fontSize;
+				if (x + advanceWidth > _maxSize.Width)
+				{
+					y -= lineHeight;
+					if ((-y) + lineHeight >= _maxSize.Height)
+						break;
+					x = 0;
+				}
+
+				glyphIndices.Add(glyphIndex);
+				advanceWidths.Add(0);
+				glyphOffsets.Add(new sw.Point(x, y));
+
+				x += advanceWidth;
+			}
+
+#pragma warning disable CS0618 // 'GlyphRun.GlyphRun(GlyphTypeface, int, bool, double, IList<ushort>, Point, IList<double>, IList<Point>, IList<char>, string, IList<ushort>, IList<bool>, XmlLanguage)' is obsolete: 'Use the PixelsPerDip override'
+			return new swm.GlyphRun(
+				glyphTypeface,
+				0,
+				false,
+				fontSize,
+				glyphIndices,
+				location,
+				advanceWidths,
+				glyphOffsets,
+				null,
+				null,
+				null,
+				null,
+				null);
+#pragma warning restore CS0618 // 'GlyphRun.GlyphRun(GlyphTypeface, int, bool, double, IList<ushort>, Point, IList<double>, IList<Point>, IList<char>, string, IList<ushort>, IList<bool>, XmlLanguage)' is obsolete: 'Use the PixelsPerDip override'
+		}
+	}
+}
+

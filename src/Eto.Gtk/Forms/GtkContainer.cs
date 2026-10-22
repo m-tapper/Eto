@@ -1,10 +1,4 @@
-using System.Linq;
-using Eto.Forms;
-using Eto.Drawing;
 using Eto.GtkSharp.Forms.Controls;
-using System.Collections.Generic;
-using System;
-
 namespace Eto.GtkSharp.Forms
 {
 	public abstract class GtkContainer<TControl, TWidget, TCallback> : GtkControl<TControl, TWidget, TCallback>, Container.IHandler
@@ -34,6 +28,8 @@ namespace Eto.GtkSharp.Forms
 		IEnumerable<Gtk.Widget> GetOrderedWidgets()
 		{
 			var parent = Widget.IsVisualControl ? Widget.LogicalParent : Widget;
+			if (parent == null)
+				yield break;
 			foreach (var ctl in parent.Controls.OrderBy(r => r.TabIndex))
 			{
 				var widget = ctl.GetContainerWidget();

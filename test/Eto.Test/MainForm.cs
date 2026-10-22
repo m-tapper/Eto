@@ -1,12 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Diagnostics;
-using System.Globalization;
-using Eto.Forms;
-using Eto.Drawing;
-using System.Threading.Tasks;
-
 namespace Eto.Test
 {
 	public class MainForm : Form
@@ -32,36 +23,92 @@ namespace Eto.Test
 			}
 		}
 
+		/// <summary>
+		/// Set to initial section name to select for easier debugging
+		/// </summary>
+		public string InitialSection { get; set; }
+
 		public MainForm(IEnumerable<Section> topNodes = null)
 		{
-			Title = string.Format("Test Application [{0}, {1} {2}, {3}]",
-				Platform.ID,
-				EtoEnvironment.Is64BitProcess ? "64bit" : "32bit",
-				EtoEnvironment.Platform.IsMono ? "Mono" : ".NET",
-				EtoEnvironment.Platform.IsWindows ? EtoEnvironment.Platform.IsWinRT
+			var bitness = EtoEnvironment.Is64BitProcess ? "64bit" : "32bit";
+			var runtime = RuntimeInformation.FrameworkDescription ?? (EtoEnvironment.Platform.IsMono ? "Mono" : EtoEnvironment.Platform.IsNetCore ? ".NET Core" : ".NET");
+			var platform = EtoEnvironment.Platform.IsWindows ? EtoEnvironment.Platform.IsWinRT
 				? "WinRT" : "Windows" : EtoEnvironment.Platform.IsMac
 				? "Mac" : EtoEnvironment.Platform.IsLinux
 				? "Linux" : EtoEnvironment.Platform.IsUnix
-				? "Unix" : "Unknown");
-			Style = "main";
-			MinimumSize = new Size(400, 400);
-			topNodes = topNodes ?? TestSections.Get(TestApplication.DefaultTestAssemblies());
-			//SectionList = new SectionListGridView(topNodes);
-			//SectionList = new SectionListTreeView(topNodes);
-			if (Platform.IsAndroid)
-				SectionList = new SectionListGridView(topNodes);
-			else
-				SectionList = new SectionListTreeGridView(topNodes);
+				? "Unix" : "Unknown";
 
-			this.Icon = TestIcons.TestIcon;
+			Title = $"Test Application [{Platform.ID}, {bitness}, {runtime}, {platform}]";
+			Style = "main";
+			MinimumSize = new Size(600, 500);
+			topNodes = topNodes ?? TestSections.Get(TestApplication.DefaultTestAssemblies());
+
+			var nodes = topNodes.ToList();
+			if (Platform.Supports<TreeGridView>())
+				SectionList = new SectionListTreeGridView(nodes);
+			else if (Platform.Supports<GridView>())
+				SectionList = new SectionListGridView(nodes);
+			else if (Platform.Supports<ListBox>())
+				SectionList = new SectionListListBox(nodes);
+
+			SectionList.SelectedItemChanged += SectionList_SelectedItemChanged;
+
+
+			if (Platform.Supports<Icon>())
+				this.Icon = TestIcons.TestIcon;
 
 			if (Platform.IsDesktop)
-				ClientSize = new Size(900, 650);
+				ClientSize = new Size(1024, 700);
 			//Opacity = 0.5;
 
 			Content = MainContent();
 
 			CreateMenuToolBar();
+
+			if (TestApplication.Settings.SaveInitialSection && InitialSection == null)
+				InitialSection = TestApplication.Settings.InitialSection;
+
+			if (InitialSection != null)
+			{
+				SectionList.SelectedItem = nodes.SelectMany(r => r).OfType<ISection>().FirstOrDefault(r => r.Text == InitialSection);
+			}
+
+		}
+
+		private void SectionList_SelectedItemChanged(object sender, EventArgs e)
+		{
+			Control content = null;
+			var item = SectionList.SelectedItem;
+
+			try
+			{
+				content = item?.CreateContent();
+			}
+			catch (Exception ex)
+			{
+				Log.Write(this, "Error loading section: {0}", ex.ToString());
+				contentContainer.Content = null;
+			}
+			finally
+			{
+				if (navigation != null)
+				{
+					if (content != null)
+						navigation.Push(content, item?.Text);
+				}
+				else
+				{
+					contentContainer.Content = content;
+				}
+			}
+
+			// save the initial section
+			TestApplication.Settings.InitialSection = item?.Text;
+
+#if DEBUG
+			GC.Collect();
+			GC.WaitForPendingFinalizers();
+#endif
 		}
 
 		public SectionList SectionList { get; set; }
@@ -70,44 +117,7 @@ namespace Eto.Test
 		{
 			contentContainer = new Panel();
 
-			// set focus when the form is shown
-			Shown += delegate
-			{
-				SectionList.Focus();
-			};
-			SectionList.SelectedItemChanged += (sender, e) =>
-			{
-				Control content = null;
-				var item = SectionList.SelectedItem;
-
-				try
-				{
-					content = item?.CreateContent();
-				}
-				catch (Exception ex)
-				{
-					Log.Write(this, "Error loading section: {0}", ex.GetBaseException());
-					contentContainer.Content = null;
-				}
-				finally
-				{
-					if (navigation != null)
-					{
-						if (content != null)
-							navigation.Push(content, item?.Text);
-					}
-					else
-					{
-						contentContainer.Content = content;
-					}
-				}
-
-#if DEBUG
-				GC.Collect();
-				GC.WaitForPendingFinalizers();
-#endif
-			};
-
+			SectionList.Focus();
 			if (Splitter.IsSupported)
 			{
 				var splitter = new Splitter
@@ -150,7 +160,7 @@ namespace Eto.Test
 			layout.BeginHorizontal();
 			layout.Add(EventLog, true);
 
-			layout.BeginVertical(new Padding(0, 0, 5, 0));
+			layout.BeginVertical(new Padding(0, 5, 5, 0));
 			layout.Add(ClearButton());
 			layout.Add(MemoryButton());
 			layout.Add(null);
@@ -193,6 +203,9 @@ namespace Eto.Test
 
 			if (Platform.Supports<MenuBar>())
 			{
+				var saveSettingsItem = new CheckMenuItem { Text = "Save Selected Section" };
+				saveSettingsItem.Bind(c => c.Checked, TestApplication.Settings, s => s.SaveInitialSection);
+
 				var fileCommand = new Command { MenuText = "File Command", Shortcut = Application.Instance.CommonModifier | Keys.F };
 				fileCommand.Executed += (sender, e) => Log.Write(sender, "Executed");
 				var editCommand = new Command { MenuText = "Edit Command", Shortcut = Keys.Shift | Keys.E };
@@ -208,29 +221,37 @@ namespace Eto.Test
 					throw new InvalidOperationException("This is the exception message");
 				};
 
-				var subMenu = new ButtonMenuItem { Text = "Sub Menu" };
+				var subMenu = new SubMenuItem { Text = "Sub Menu" };
 				subMenu.Items.Add(new ButtonMenuItem { Text = "Item 1" });
 				subMenu.Items.Add(new ButtonMenuItem { Text = "Item 2" });
 				subMenu.Items.Add(new ButtonMenuItem { Text = "Item 3" });
 
-				var file = new ButtonMenuItem { Text = "&File", Items = { fileCommand, crashCommand } };
-				var edit = new ButtonMenuItem { Text = "&Edit", Items = { editCommand, subMenu } };
-                var view = new ButtonMenuItem { Text = "&View", Items = { viewCommand } };
-				var window = new ButtonMenuItem { Text = "&Window", Order = 1000, Items = { windowCommand } };
+				var file = new SubMenuItem { Text = "&File", Items = { saveSettingsItem, fileCommand, crashCommand } };
+				var edit = new SubMenuItem { Text = "&Edit", Items = { editCommand, subMenu } };
+                var view = new SubMenuItem { Text = "&View", Items = { viewCommand } };
+				var window = new SubMenuItem { Text = "&Window", Order = 1000, Items = { windowCommand } };
 
 				if (Platform.Supports<CheckMenuItem>())
 				{
 					edit.Items.AddSeparator();
 
 					var checkMenuItem1 = new CheckMenuItem { Text = "Check Menu Item", Shortcut = Keys.Shift | Keys.K };
-					checkMenuItem1.Click += (sender, e) => Log.Write(checkMenuItem1, "Click, {0}, Checked: {1}", checkMenuItem1.Text, checkMenuItem1.Checked);
-					checkMenuItem1.CheckedChanged += (sender, e) => Log.Write(checkMenuItem1, "CheckedChanged, {0}: {1}", checkMenuItem1.Text, checkMenuItem1.Checked);
+					checkMenuItem1.Click += (sender, e) => Log.Write(sender, "Click, {0}, Checked: {1}", checkMenuItem1.Text, checkMenuItem1.Checked);
+					checkMenuItem1.CheckedChanged += (sender, e) => Log.Write(sender, "CheckedChanged, {0}: {1}", checkMenuItem1.Text, checkMenuItem1.Checked);
 					edit.Items.Add(checkMenuItem1);
 
 					var checkMenuItem2 = new CheckMenuItem { Text = "Initially Checked Menu Item", Checked = true };
-					checkMenuItem2.Click += (sender, e) => Log.Write(checkMenuItem2, "Click, {0}, Checked: {1}", checkMenuItem2.Text, checkMenuItem2.Checked);
-					checkMenuItem2.CheckedChanged += (sender, e) => Log.Write(checkMenuItem2, "CheckedChanged, {0}: {1}", checkMenuItem2.Text, checkMenuItem2.Checked);
+					checkMenuItem2.Click += (sender, e) => Log.Write(sender, "Click, {0}, Checked: {1}", checkMenuItem2.Text, checkMenuItem2.Checked);
+					checkMenuItem2.CheckedChanged += (sender, e) => Log.Write(sender, "CheckedChanged, {0}: {1}", checkMenuItem2.Text, checkMenuItem2.Checked);
 					edit.Items.Add(checkMenuItem2);
+
+					var checkMenuItem3 = new CheckCommand { MenuText = "Check Command", Shortcut = Keys.Shift | Keys.K };
+					checkMenuItem3.Executed += (sender, e) => Log.Write(sender, "Executed, {0}, Checked: {1}", checkMenuItem3.MenuText, checkMenuItem3.Checked);
+					checkMenuItem3.CheckedChanged += (sender, e) => Log.Write(sender, "CheckedChanged, {0}: {1}", checkMenuItem3.MenuText, checkMenuItem3.Checked);
+					edit.Items.Add(checkMenuItem3);
+
+					checkMenuItem1.Click += (sender, e) => checkMenuItem3.Checked = !checkMenuItem3.Checked;
+
 				}
 
 				if (Platform.Supports<RadioMenuItem>())
@@ -251,7 +272,30 @@ namespace Eto.Test
 						edit.Items.Add(radio);
 					}
 
+					edit.Items.AddSeparator();
+
+					RadioCommand commandController = null;
+					for (int i = 0; i < 2; i++)
+					{
+						var radio = new RadioCommand { MenuText = "Radio Command " + (i + 1), Controller = commandController };
+						if (commandController == null)
+						{
+							radio.Checked = true; // check the first item initially
+							commandController = radio;
+						}
+						radio.Executed += (sender, e) => Log.Write(radio, "Executed, {0}, Checked: {1}", radio.MenuText, radio.Checked);
+						radio.CheckedChanged += (sender, e) => Log.Write(radio, "CheckedChanged, {0}: {1}", radio.MenuText, radio.Checked);
+						edit.Items.Add(radio);
+					}
 				}
+
+				edit.Items.AddSeparator();
+				var hiddenItem = new ButtonMenuItem { Text = "This button should not be visible!", Visible = false };
+				var toggleHiddenItem = new ButtonMenuItem { Text = "Toggle Hidden Item" };
+				toggleHiddenItem.Click += (sender, e) => hiddenItem.Visible = !hiddenItem.Visible;
+				edit.Items.Add(hiddenItem);
+				edit.Items.Add(toggleHiddenItem);
+
 
 				Menu = new MenuBar
 				{
@@ -281,22 +325,128 @@ namespace Eto.Test
 				ToolBar = new ToolBar();
 
 				ToolBar.Items.Add(about);
+
+				// theme switcher, so themes can be tested against any section without
+				// navigating to the Themes section and back.
+				AddThemeToolItem(ToolBar);
+
 				if (Platform.Supports<CheckToolItem>())
 				{
 					ToolBar.Items.Add(new SeparatorToolItem { Type = SeparatorToolItemType.Divider });
-					ToolBar.Items.Add(new CheckToolItem { Text = "Check", Image = TestIcons.TestImage });
+					ToolBar.Items.Add(LogEvents(new CheckToolItem { Text = "Check", Image = TestIcons.TestImage }));
 				}
 				ToolBar.Items.Add(new SeparatorToolItem { Type = SeparatorToolItemType.Space });
-				ToolBar.Items.Add(new ButtonToolItem { Text = "Click Me", Image = TestIcons.Logo });
+				ButtonToolItem clickButton = LogEvents(new ButtonToolItem { Text = "Click Me", Image = TestIcons.Logo });
+				ToolBar.Items.Add(clickButton);
 				if (Platform.Supports<RadioToolItem>())
 				{
 					ToolBar.Items.Add(new SeparatorToolItem { Type = SeparatorToolItemType.FlexibleSpace });
-					ToolBar.Items.Add(new RadioToolItem { Text = "Radio1", Image = TestIcons.Logo, Checked = true });
-					ToolBar.Items.Add(new RadioToolItem { Text = "Radio2", Image = TestIcons.TestImage });
-					ToolBar.Items.Add(new RadioToolItem { Text = "Radio3 (Disabled)", Image = TestIcons.TestImage, Enabled = false });
+					ToolBar.Items.Add(LogEvents(new RadioToolItem { Text = "Radio1", Image = TestIcons.Logo, Checked = true }));
+					ToolBar.Items.Add(LogEvents(new RadioToolItem { Text = "Radio2", Image = TestIcons.TestImage }));
+					ToolBar.Items.Add(LogEvents(new RadioToolItem { Text = "Radio3 (Disabled)", Image = TestIcons.TestImage, Enabled = false }));
+				}
+
+				// add an invisible button and separator and allow them to be toggled.
+				var invisibleButton = LogEvents(new ButtonToolItem { Text = "Invisible", Visible = false });
+				var sep = new SeparatorToolItem { Type = SeparatorToolItemType.Divider, Visible = false };
+				ToolBar.Items.Add(sep);
+				ToolBar.Items.Add(invisibleButton);
+				clickButton.Click += (sender, e) =>
+				{
+					invisibleButton.Visible = !invisibleButton.Visible;
+					sep.Visible = invisibleButton.Visible;
+				};
+				
+				if (Platform.Supports<DropDownToolItem>())
+				{
+					var dropItem = new DropDownToolItem { Text = "Dropdown", Image = TestIcons.TestImage };
+					dropItem.Items.Add(new SubMenuItem { Text = "Subitem 1", Items = { new ButtonMenuItem { Text = "Nested subitem 1" } } });
+					dropItem.Items.Add(new ButtonMenuItem { Text = "Button 2", Image = TestIcons.TestIcon });
+					dropItem.Items.Add(new CheckMenuItem { Text = "Check 3" });
+					dropItem.Items.Add(new ButtonMenuItem { Text = "Disabled Button", Image = TestIcons.TestIcon, Enabled = false });
+					dropItem.Items.Add(new CheckMenuItem((sender, e) => {
+						dropItem.ShowDropArrow = ((CheckMenuItem)sender).Checked == true;
+					}) { Text = "Toggle ShowDropArrow", Checked = dropItem.ShowDropArrow });
+					ToolBar.Items.Add(LogEvents(dropItem));
 				}
 			}
 		}
+
+		void AddThemeToolItem(ToolBar toolBar)
+		{
+			// requires a drop-down with radio items to show/select the active theme
+			if (!Platform.Supports<DropDownToolItem>() || !Platform.Supports<RadioMenuItem>())
+				return;
+
+			List<Theme> themes;
+			try
+			{
+				themes = Themes.AllThemes.ToList();
+			}
+			catch (Exception ex)
+			{
+				// themes aren't available on every platform
+				Log.Write(this, $"Themes not available: {ex.Message}");
+				return;
+			}
+			if (themes.Count == 0)
+				return;
+
+			var themeDropDown = new DropDownToolItem { Text = "Theme" };
+			var itemsByTheme = new Dictionary<Theme, RadioMenuItem>();
+			RadioMenuItem controller = null;
+			foreach (var theme in themes)
+			{
+				var item = new RadioMenuItem(controller) { Text = $"Theme: {theme.Name}" };
+				controller ??= item;
+				var themeToApply = theme;
+				item.Click += (sender, e) => Application.Instance.Theme = themeToApply;
+				itemsByTheme[theme] = item;
+				themeDropDown.Items.Add(item);
+			}
+
+			void UpdateChecked()
+			{
+				var current = Application.Instance.Theme;
+				foreach (var pair in itemsByTheme)
+				{
+					// setting the matching radio unchecks its siblings via the controller
+					if (pair.Key == current && !pair.Value.Checked)
+						pair.Value.Checked = true;
+				}
+				themeDropDown.Text = current != null ? $"Theme: {current.Name}" : "Theme";
+			}
+
+			UpdateChecked();
+			// keep the toolbar in sync when the theme is changed elsewhere (e.g. Themes section)
+			Application.Instance.ThemeChanged += (sender, e) => UpdateChecked();
+
+			toolBar.Items.Add(new SeparatorToolItem { Type = SeparatorToolItemType.Divider });
+			toolBar.Items.Add(themeDropDown);
+		}
+
+		RadioToolItem LogEvents(RadioToolItem item)
+		{
+			item.CheckedChanged += (sender, e) => Log.Write(sender, $"CheckedChanged: {item.Text}");
+			item.Click += (sender, e) => Log.Write(sender, $"Click: {item.Text}");
+			return item;
+		}
+		CheckToolItem LogEvents(CheckToolItem item)
+		{
+			item.CheckedChanged += (sender, e) => Log.Write(sender, $"CheckedChanged: {item.Text}");
+			item.Click += (sender, e) => Log.Write(sender, $"Click: {item.Text}");
+			return item;
+		}
+		ButtonToolItem LogEvents(ButtonToolItem item)
+		{
+			item.Click += (sender, e) => Log.Write(sender, $"Click: {item.Text}");
+			return item;
+		}
+		DropDownToolItem LogEvents(DropDownToolItem item)
+			{
+			item.Click += (sender, e) => Log.Write(sender, $"Click: {item.Text}");
+			return item;
+			}
 
 		protected override void OnWindowStateChanged(EventArgs e)
 		{

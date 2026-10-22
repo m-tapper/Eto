@@ -1,24 +1,22 @@
-using System;
-using System.Linq;
-using sd = System.Drawing;
-using swf = System.Windows.Forms;
-using Eto.Drawing;
-using Eto.Forms;
-
 namespace Eto.WinForms.Forms.Controls
 {
-	/// <summary>
-	/// Button handler.
-	/// </summary>
-	/// <copyright>(c) 2012-2013 by Curtis Wensley</copyright>
-	/// <license type="BSD-3">See LICENSE for full terms</license>
-	public class ButtonHandler : WindowsControl<ButtonHandler.EtoButton, Button, Button.ICallback>, Button.IHandler
+	public class ButtonHandler : ButtonHandler<ButtonHandler.EtoButton, Button, Button.ICallback>, Button.IHandler
 	{
+
 		// windows guidelines specify default height of 23
-		public static Size DefaultMinimumSize = new Size(80, 23);
+		public static Size DefaultMinimumSize = new Size(80, 25);
+
+		protected override Size GetDefaultMinimumSize() => DefaultMinimumSize;
 
 		public class EtoButton : swf.Button
 		{
+			public EtoButton()
+			{
+				AutoSizeMode = swf.AutoSizeMode.GrowAndShrink;
+				TextImageRelation = swf.TextImageRelation.ImageBeforeText;
+				AutoSize = true;
+			}
+
 			public override sd.Size GetPreferredSize(sd.Size proposedSize)
 			{
 				var size = base.GetPreferredSize(sd.Size.Empty);
@@ -43,23 +41,28 @@ namespace Eto.WinForms.Forms.Controls
 			}
 		}
 
-		public override Size? GetDefaultSize(Size availableSize)
+		protected override EtoButton CreateControl() => new EtoButton();
+
+	}
+
+	public abstract class ButtonHandler<TControl, TWidget, TCallback> : WindowsControl<TControl, TWidget, TCallback>, Button.IHandler
+		where TControl: swf.ButtonBase
+		where TWidget: Button
+		where TCallback: Button.ICallback
+	{
+		protected abstract Size GetDefaultMinimumSize();
+
+		public override Size? GetDefaultSize(Size availableSize) => MinimumSize;
+
+		protected override void Initialize()
 		{
-			return MinimumSize;
+			base.Initialize();
+			Control.Click += Control_Click;
 		}
 
-		public ButtonHandler()
+		void Control_Click(object sender, EventArgs e)
 		{
-			Control = new EtoButton
-			{
-				AutoSizeMode = swf.AutoSizeMode.GrowAndShrink,
-				TextImageRelation = swf.TextImageRelation.ImageBeforeText,
-				AutoSize = true
-			};
-			Control.Click += delegate
-			{
-				Callback.OnClick(Widget, EventArgs.Empty);
-			};
+			Callback.OnClick(Widget, EventArgs.Empty);
 		}
 
 		public override string Text
@@ -105,11 +108,20 @@ namespace Eto.WinForms.Forms.Controls
 			}
 		}
 
+		static readonly object ImageNextToText_Key = new object();
+
+		public bool ImageNextToText
+		{
+			// WinForms always splits the button into an image region at the edge and centers the text in what's left
+			get { return Widget.Properties.Get<bool>(ImageNextToText_Key); }
+			set { Widget.Properties.Set(ImageNextToText_Key, value); }
+		}
+
 		static readonly object MinimumSize_Key = new object();
 
 		public Size MinimumSize
 		{
-			get { return Widget.Properties.Get(MinimumSize_Key, DefaultMinimumSize); }
+			get { return Widget.Properties.Get(MinimumSize_Key, GetDefaultMinimumSize); }
 			set
 			{
 				if (MinimumSize != value)
@@ -125,6 +137,18 @@ namespace Eto.WinForms.Forms.Controls
 		public override bool ShouldBubbleEvent(swf.Message msg)
 		{
 			return !intrinsicEvents.Contains((Win32.WM)msg.Msg) && base.ShouldBubbleEvent(msg);
+		}
+
+		public bool UseMnemonic
+		{
+			get => Control.UseMnemonic;
+			set => Control.UseMnemonic = value;
+		}
+
+		public bool AlwaysShowMnemonic
+		{
+			get => false;
+			set { /* not supported */ }
 		}
 	}
 }

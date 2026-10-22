@@ -1,24 +1,22 @@
-using System;
-using Eto.Drawing;
-using Eto.Forms;
 using Eto.Mac.Forms.Actions;
-#if XAMMAC2
-using AppKit;
-using Foundation;
-using CoreGraphics;
-using ObjCRuntime;
-using CoreAnimation;
-#else
-using MonoMac.AppKit;
-using MonoMac.Foundation;
-using MonoMac.CoreGraphics;
-using MonoMac.ObjCRuntime;
-using MonoMac.CoreAnimation;
-#endif
 
 namespace Eto.Mac.Forms.Menu
 {
-	public class ButtonMenuItemHandler : MenuHandler<NSMenuItem, ButtonMenuItem, ButtonMenuItem.ICallback>, ButtonMenuItem.IHandler, IMenuActionHandler
+	public class ButtonMenuItemHandler : ButtonMenuItemHandler<ButtonMenuItem, ButtonMenuItem.ICallback>
+	{
+		public ButtonMenuItemHandler()
+		{
+		}
+
+		public ButtonMenuItemHandler(NSMenuItem item)
+			: base(item)
+		{
+		}
+	}
+
+	public class ButtonMenuItemHandler<TWidget, TCallback> : MenuHandler<NSMenuItem, TWidget, TCallback>, ButtonMenuItem.IHandler, IMenuActionHandler
+		where TWidget: MenuItem
+		where TCallback: MenuItem.ICallback
 	{
 		Image image;
 		string text;
@@ -34,18 +32,24 @@ namespace Eto.Mac.Forms.Menu
 				SetImage();
 			}
 		}
+		
+		public ButtonMenuItemHandler()
+		{
+		}
+		
+		public ButtonMenuItemHandler(NSMenuItem item)
+		{
+			Control = item;
+		}
 
 		protected override NSMenuItem CreateControl()
 		{
-			return new NSMenuItem();
-		}
-
-		protected override void Initialize()
-		{
-			Enabled = true;
-			Control.Target = new MenuActionHandler{ Handler = this };
-			Control.Action = MenuActionHandler.selActivate;
-			base.Initialize();
+			return new NSMenuItem
+			{
+				Target = new MenuActionHandler { Handler = this },
+				Action = MenuActionHandler.selActivate,
+				Enabled = true
+			};
 		}
 
 		public override void Activate()
@@ -110,9 +114,8 @@ namespace Eto.Mac.Forms.Menu
 			Control.Image = ShowImage ? image.ToNS(16) : null;
 		}
 
-		MenuItem IMenuActionHandler.Widget
-		{
-			get { return Widget; }
-		}
+		MenuItem IMenuActionHandler.Widget => Widget;
+
+		MenuItem.ICallback IMenuActionHandler.Callback => Callback;
 	}
 }

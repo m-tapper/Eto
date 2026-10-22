@@ -1,21 +1,8 @@
-using System;
-using System.Reflection;
-using Eto.Forms;
-using System.Collections.Generic;
 using NUnit.Framework.Internal;
 using NUnit.Framework.Api;
-using System.Threading.Tasks;
-using Eto.Drawing;
-using System.Linq;
 using NUnit.Framework.Interfaces;
-using System.IO;
-using System.Collections.ObjectModel;
-using System.Text.RegularExpressions;
-using System.Diagnostics;
-using System.Text;
 using System.Collections.Concurrent;
-using System.Collections;
-using System.ComponentModel;
+using Eto.Test.UnitTests;
 
 namespace Eto.Test.Sections
 {
@@ -434,6 +421,14 @@ namespace Eto.Test.Sections
 
 		public ICollection<TestAttachment> TestAttachments => Results.SelectMany(r => r.TestAttachments).ToList();
 
+		public int TotalCount => Results.Sum(r => r.TotalCount);
+
+		public int InitiatedCount => Results.Sum(r => r.InitiatedCount);
+
+		public int CompletedCount => Results.Sum(r => r.CompletedCount);
+
+		public int AssertionResultCount => Results.Sum(r => r.AssertionResultCount);
+
 		public TNode AddToXml(TNode parentNode, bool recursive) => throw new NotImplementedException();
 
 		public TNode ToXml(bool recursive) => null;
@@ -534,7 +529,7 @@ namespace Eto.Test.Sections
 		TaskCompletionSource<ITestResult> tcs;
 		UnitTestProgressEventArgs progressArgs;
 		List<ITestAssemblyRunner> runnerCache;
-		ITestAssemblyBuilder builder = new DefaultTestAssemblyBuilder();
+		ITestAssemblyBuilder builder = new SingleFileDefaultTestAssemblyBuilder();
 
 		public IList<UnitTestSource> Sources => sources;
 
@@ -647,6 +642,19 @@ namespace Eto.Test.Sections
 			return tcs.Task;
 		}
 
+		class CustomSynchronizationContext : SynchronizationContext
+		{
+			public override void Post(SendOrPostCallback d, object state)
+			{
+				Application.Instance.AsyncInvoke(() => d(state));
+			}
+			public override void Send(SendOrPostCallback d, object state)
+			{
+				Application.Instance.Invoke(() => d(state));
+			}
+		}
+
+
 		void TestNextAssembly()
 		{
 			lock (this)
@@ -664,8 +672,11 @@ namespace Eto.Test.Sections
 					tcs.SetResult(allresults);
 					return;
 				}
+				var lastSync = SynchronizationContext.Current;
 				try
 				{
+					// prevent nunit from trying to use the WPF or WinForms context in a bad way..
+					SynchronizationContext.SetSynchronizationContext(new CustomSynchronizationContext());
 					new TestExecutionContext.AdhocContext().EstablishExecutionEnvironment();
 					currentRunner = nextRunner;
 					nextRunner.RunAsync(this, testFilter);
@@ -676,6 +687,10 @@ namespace Eto.Test.Sections
 					tcs.SetException(ex);
 					currentRunner = null;
 					IsRunning = false;
+				}
+				finally
+				{
+					SynchronizationContext.SetSynchronizationContext(lastSync);
 				}
 			}
 		}
@@ -726,12 +741,17 @@ namespace Eto.Test.Sections
 					{
 						if (assertion.Status == AssertionStatus.Passed)
 							continue;
-						WriteLog($"{assertion.Status}: {result.Message}\n{result.StackTrace}");
+						if (!string.IsNullOrEmpty(result.StackTrace))
+							WriteLog($"{assertion.Status}: {assertion.Message}\n{assertion.StackTrace}");
+						else
+							WriteLog($"{assertion.Status}: {assertion.Message}");
 					}
 				}
-				else
+				else if (result.ResultState.Status != TestStatus.Passed && result.ResultState.Status != TestStatus.Skipped)
 				{
-					if (result.ResultState.Status != TestStatus.Passed && result.ResultState.Status != TestStatus.Skipped)
+					if (!string.IsNullOrEmpty(result.StackTrace))
+						WriteLog($"{result.ResultState.Status}: {result.Message}\n{result.StackTrace}");
+					else
 						WriteLog($"{result.ResultState.Status}: {result.Message}");
 				}
 			}
@@ -1093,7 +1113,8 @@ namespace Eto.Test.Sections
 			timer.Interval = 0.5;
 			timer.Elapsed += (sender, e) => PerformSearch();
 
-			testCountLabel = new Label {
+			testCountLabel = new Label
+			{
 				VerticalAlignment = VerticalAlignment.Center
 			};
 
@@ -1104,6 +1125,7 @@ namespace Eto.Test.Sections
 			stopButton.Click += (s, e) => runner?.StopTests();
 
 			search = new SearchBox();
+			search.Text = TestApplication.Settings.LastUnitTestFilter;
 			search.PlaceholderText = "Filter(s)";
 			search.Focus();
 			search.KeyDown += (sender, e) =>
@@ -1114,7 +1136,11 @@ namespace Eto.Test.Sections
 					e.Handled = true;
 				}
 			};
-			search.TextChanged += (sender, e) => timer.Start();
+			search.TextChanged += (sender, e) =>
+			{
+				TestApplication.Settings.LastUnitTestFilter = search.Text;
+				timer.Start();
+			};
 
 
 			tree = new TreeGridView { ShowHeader = false, Size = new Size(400, -1) };
@@ -1126,8 +1152,8 @@ namespace Eto.Test.Sections
 					ImageBinding = Binding.Property((UnitTestItem m) => m.Image)
 				}
 			});
-
-			tree.Activated += (sender, e) =>
+			
+			void RunSelectedTest()
 			{
 				if (runner.IsRunning)
 					return;
@@ -1139,6 +1165,21 @@ namespace Eto.Test.Sections
 					{
 						RunTests(filter);
 					}
+				}
+			}
+
+			tree.CellDoubleClick += (sender, e) =>
+			{
+				RunSelectedTest();
+				e.Handled = true;
+			};
+			
+			tree.KeyDown += (sender, e) =>
+			{
+				if (e.KeyData == Keys.Enter)
+				{
+					RunSelectedTest();
+					e.Handled = true;
 				}
 			};
 
@@ -1204,7 +1245,6 @@ namespace Eto.Test.Sections
 
 			if (showLog)
 			{
-				Size = new Size(950, 600);
 				log = new TextArea { Size = new Size(400, 300), ReadOnly = true, Wrap = false };
 
 				base.Content = new Splitter
@@ -1253,7 +1293,7 @@ namespace Eto.Test.Sections
 			{
 				startButton.Enabled = !running;
 				stopButton.Enabled = running;
-				search.Enabled = !running;
+				search.ReadOnly = running;
 				filterControls.Enabled = !running;
 
 				if (!running && StatusFilters.Any())
@@ -1376,7 +1416,13 @@ namespace Eto.Test.Sections
 				case TestStatus.Warning:
 					return CreateImage(Colors.Yellow, Colors.Black, "!");
 				case TestStatus.Failed:
-					return CreateImage(Colors.Red, Colors.White, "✖");
+					return CreateImage(Colors.Red, (g, b) =>
+					{
+						var offset = 10;
+						var pen = new Pen(Colors.White, 4);
+						g.DrawLine(pen, offset, offset, b.Width - offset, b.Height - offset);
+						g.DrawLine(pen, b.Width - offset, offset, offset, b.Height - offset);
+					});
 				case TestStatus.Inconclusive:
 					return CreateImage(Colors.Yellow, Colors.Black, "?");
 				case TestStatus.Skipped:
@@ -1388,24 +1434,31 @@ namespace Eto.Test.Sections
 			}
 		}
 
+		static Image CreateImage(Color color, Action<Graphics, Bitmap> draw)
+		{
+			var bmp = new Bitmap(32, 32, PixelFormat.Format32bppRgba);
+			using (var g = new Graphics(bmp))
+			{
+				var r = new RectangleF(Point.Empty, bmp.Size);
+				r.Inflate(-1, -1);
+				g.FillEllipse(color, r);
+				draw?.Invoke(g, bmp);
+			}
+			return bmp.WithSize(16, 16);
+		}
+
 		static Image CreateImage(Color color, Color textcolor, string text)
 		{
-			return Application.Instance.Invoke(() =>
+			return CreateImage(color, (g, b) =>
 			{
-				var bmp = new Bitmap(32, 32, PixelFormat.Format32bppRgba);
-				using (var g = new Graphics(bmp))
+				var r = new RectangleF(Point.Empty, b.Size);
+				r.Inflate(-1, -1);
+				if (text != null)
 				{
-					var r = new RectangleF(Point.Empty, bmp.Size);
-					r.Inflate(-1, -1);
-					g.FillEllipse(color, r);
-					if (text != null)
-					{
-						var font = SystemFonts.Default(SystemFonts.Default().Size * 2);
-						var size = g.MeasureString(font, text);
-						g.DrawText(font, textcolor, r.Location + (PointF)(r.Size - size) / 2, text);
-					}
+					var font = SystemFonts.Default(SystemFonts.Default().Size * 2);
+					var size = g.MeasureString(font, text);
+					g.DrawText(font, textcolor, r.Location + (PointF)(r.Size - size) / 2, text);
 				}
-				return bmp.WithSize(16, 16);
 			});
 		}
 
@@ -1481,20 +1534,27 @@ namespace Eto.Test.Sections
 			var filter = CreateFilter();
 			Task.Run(() =>
 			{
-				var map = new Dictionary<object, UnitTestItem>();
-				var tests = Runner.GetTests();
-		  // always show all categories
-		  var categories = AvailableCategories ?? Runner.GetCategories(TestFilter.Empty).OrderBy(r => r);
-				var totalTestCount = Runner.GetTestCount(filter);
-				var testSuites = tests.Select(suite => ToTree(suite.Assembly, suite, filter, map)).Where(r => r != null);
-				var treeData = new TreeGridItem(testSuites);
-				Application.Instance.AsyncInvoke(() =>
-		  {
-				  AvailableCategories = categories;
-				  testCountLabel.Text = $"{totalTestCount} Tests";
-				  testMap = map;
-				  tree.DataStore = treeData;
-			  });
+				try
+				{
+					var map = new Dictionary<object, UnitTestItem>();
+					var tests = Runner.GetTests();
+					// always show all categories
+					var categories = AvailableCategories ?? Runner.GetCategories(TestFilter.Empty).OrderBy(r => r);
+					var totalTestCount = Runner.GetTestCount(filter);
+					var testSuites = tests.Select(suite => ToTree(suite.Assembly, suite, filter, map)).Where(r => r != null);
+					var treeData = new TreeGridItem(testSuites);
+					Application.Instance.AsyncInvoke(() =>
+					{
+						AvailableCategories = categories;
+						testCountLabel.Text = $"{totalTestCount} Tests";
+						testMap = map;
+						tree.DataStore = treeData;
+					});
+				}
+				catch (Exception ex)
+				{
+					Debug.WriteLine($"Error loading tests: {ex}");
+				}
 			});
 		}
 
@@ -1504,6 +1564,7 @@ namespace Eto.Test.Sections
 			public ITest Test { get; set; }
 			public Image Image { get; set; }
 			public ITestFilter Filter { get; set; }
+			public ITestResult Result { get; set; }
 		}
 
 		TreeGridItem ToTree(Assembly assembly, ITest test, ITestFilter filter, IDictionary<object, UnitTestItem> map)
@@ -1533,6 +1594,7 @@ namespace Eto.Test.Sections
 			{
 				Text = name,
 				Test = test,
+				Result = result,
 				Image = GetStateImage(result),
 				Filter = new SingleTestFilter { Test = test, Assembly = assembly }
 			};

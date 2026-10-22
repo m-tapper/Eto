@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <UsingTask TaskName="_GetCommonFiles" TaskFactory="CodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.v4.0.dll">
+  
+  <UsingTask TaskName="_GetCommonFiles" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
       <Files ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
       <Names ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
@@ -23,54 +24,10 @@
           }
         }  
         Result = result.ToArray();
-]]>
+        ]]>
       </Code>
     </Task>
   </UsingTask>
-	 
-  <UsingTask TaskName="GenerateVersion" TaskFactory="CodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.v4.0.dll">
-    <ParameterGroup>
-      <Version ParameterType="System.String" Required="true" Output="true" />
-    </ParameterGroup>
-    <Task>
-      <Code Type="Class" Language="cs">
-<![CDATA[
-    using System;
-    using System.IO;
-    using System.Text;
-    using System.Text.RegularExpressions;
-    using System.Reflection;
-    using System.Diagnostics;
-    using System.Linq;
-    using Microsoft.Build.Framework;
-    using Microsoft.Build.Utilities;
-
-    public class GenerateVersion : Task
-    {
-      [Output]
-      public string Version { get; set; }
-
-      public override bool Execute()
-      {
-        var currentDate = DateTime.Now;
-        var timeSpanDays = currentDate - new DateTime(2000, 01, 01);
-        var timeSpanSeconds = currentDate - DateTime.Today;
-
-        var numberOfDays = (int)timeSpanDays.TotalDays;
-        var numberOfSeconds = (int)(timeSpanSeconds.TotalSeconds / 2);
-        var versionString = Version.Replace(".*", "");
-            
-        var version = System.Version.Parse(versionString);
-            
-        Version = string.Format("{0}.{1}.{2}.{3}", version.Major, version.Minor, numberOfDays, numberOfSeconds);
-        
-        return true;
-      }
-    }
-]]></Code>
-    </Task>
-  </UsingTask>
-
   <Target Name="_EmbedReferencedAssemblies" Condition="$(EmbedReferences) != ''" AfterTargets="ResolveAssemblyReferences">
     <PropertyGroup>
       <EmbedDebugSymbols Condition="$(EmbedDebugSymbols) == ''">false</EmbedDebugSymbols>
@@ -98,19 +55,28 @@
     </ItemGroup>
     <Message Importance="high" Text="Embedding: @(FilesToEmbed->'%(Filename)%(Extension)', ', ')" />
   </Target>
-  <Import Project="$(BasePath)build\MacTemplate\MacTemplate.targets" Condition="$(UseMacTemplate) == 'True'" />
   <Import Condition="Exists('$(BasePath)..\Eto.Common.targets')" Project="$(BasePath)..\Eto.Common.targets" />
-  
+
   <Target Name="FixGtkReferences" Condition="$(FixGtkReferences)=='true'" BeforeTargets="BeforeBuild">
-  	<!-- 
-  	Set the path of gtk references explicitly for linux msbuild support.
-  	msbuild on linux crashes with gtk references and uses the wrong references when 
-  	both Gtk#2 and Gtk#3 are installed.
-  	It's most likely because the Reference.Filename incorrectly includes the ", Version=" portion of the reference.
-  	-->
-  	<PropertyGroup>
-  		<CliReferencePath Condition="$(CliReferencePath)==''">/usr/lib/cli/</CliReferencePath>
-  	</PropertyGroup>
+    <ItemGroup>
+      <GtkAssemblyFiles Include="\Library\Frameworks\Mono.framework\Versions\Current\lib\mono\gac\**\*.dll" Condition="Exists('\Library\Frameworks\Mono.framework\Versions\Current\lib\mono\gac')" />
+      <GtkAssemblyFiles Include="\lib\mono\gac\**\*.dll" Condition="Exists('\lib\mono\gac')" />
+      <GtkAssemblyPaths Include="@(GtkAssemblyFiles->'%(RootDir)%(Directory)')"/>
+    </ItemGroup>
+    
+    <PropertyGroup>
+      <AssemblySearchPaths>$(AssemblySearchPaths);{GAC}</AssemblySearchPaths>
+      <AssemblySearchPaths>$(AssemblySearchPaths);@(GtkAssemblyPaths->'%(Identity)', ';')</AssemblySearchPaths>
+    </PropertyGroup>
+    <!-- 
+    Set the path of gtk references explicitly for linux msbuild support.
+    msbuild on linux crashes with gtk references and uses the wrong references when 
+    both Gtk#2 and Gtk#3 are installed.
+    It's most likely because the Reference.Filename incorrectly includes the ", Version=" portion of the reference.
+    -->
+    <PropertyGroup>
+      <CliReferencePath Condition="$(CliReferencePath)==''">/usr/lib/cli/</CliReferencePath>
+    </PropertyGroup>
     <ItemGroup>
       <!-- collect the references we need to update -->
       <GtkReference Include="%(Reference.Identity)" Condition="%(Reference.Name) != '' and %(Reference.Name)!=%(Reference.Filename) and Exists('$(CliReferencePath)%(Reference.Name)-%(Reference.PackageVersion)/%(Reference.Name).dll')">
@@ -133,51 +99,85 @@
     -->
   </Target>
   
-  <ItemGroup Condition="$(GenerateAssemblyVersion) == 'True'">
-    <Compile Include="$(IntermediateOutputPath)VersionInfo.cs">
-      <Link>Properties\VersionInfo.cs</Link>
-      <Visible>false</Visible>
-    </Compile>
-    <Compile Include="$(SourceDir)Shared\GlobalAssemblyInfo.cs">
-      <Link>Properties\GlobalAssemblyInfo.cs</Link>
-      <Visible>false</Visible>
-    </Compile>
-  </ItemGroup>
+  <PropertyGroup>
+    <!-- why oh why do we need to specify both explicitly -->
+    <AssemblyTitle Condition="$(Title) != '' AND $(AssemblyTitle) == ''">$(Title)</AssemblyTitle>
+  </PropertyGroup>
   
-  <Target Name="_WriteVersion"
-          BeforeTargets="CoreCompile"
-          Condition="$(GenerateAssemblyVersion) == 'True'"
-          Inputs="$(MSBuildAllProjects);
-                  @(Compile);
-                  @(_CoreCompileResourceInputs);
-                  $(ApplicationIcon);
-                  $(AssemblyOriginatorKeyFile);
-                  @(ReferencePathWithRefAssemblies);
-                  @(CompiledLicenseFile);
-                  @(LinkResource);
-                  @(EmbeddedDocumentation);
-                  $(Win32Resource);
-                  $(Win32Manifest);
-                  @(CustomAdditionalCompileInputs);
-                  $(ResolvedCodeAnalysisRuleSet);
-                  @(AdditionalFiles);
-                  @(EmbeddedFiles)"
-          Outputs="$(IntermediateOutputPath)VersionInfo.cs">
-    <!-- Generate auto version number so:
-    a) we can use deterministic builds
-    b) VS on Mac won't break intellisense when strong naming the assemblies
-       see: https://github.com/mono/monodevelop/issues/4763
-    -->
-    <GenerateVersion Version="$(AssemblyVersion)">
-    	<Output TaskParameter="Version" PropertyName="AssemblyFileVersion" />
-    </GenerateVersion>
-
+  
+  <Target Name="_AddFileVersionAttribute" BeforeTargets="CoreGenerateAssemblyInfo">
+    <!-- We add this here so it doesn't trigger a rebuild due to changing based on time -->
     <ItemGroup>
-      <VersionInfo Include="[assembly: System.Reflection.AssemblyVersion(&quot;$(AssemblyVersion)&quot;)]" />
-      <VersionInfo Include="[assembly: System.Reflection.AssemblyFileVersion(&quot;$(AssemblyFileVersion)&quot;)]" />
-      <VersionInfo Include="[assembly: System.Reflection.AssemblyInformationalVersion(&quot;$(AssemblyInformationalVersion)&quot;)]" />
+      <AssemblyAttribute Include="System.Reflection.AssemblyFileVersionAttribute" Condition="'$(FileVersion)' != ''">
+        <_Parameter1>$(FileVersion)</_Parameter1>
+      </AssemblyAttribute>
     </ItemGroup>
-    <MakeDir Directories="$(IntermediateOutputPath)" />
-    <WriteLinesToFile File="$(IntermediateOutputPath)VersionInfo.cs" Overwrite="True" Lines="@(VersionInfo)" />
+    
   </Target>
+
+  <ItemGroup>
+    <None Remove="**\*.tt" />
+  </ItemGroup>
+
+  <!--
+  Transform the T4 templates.
+  
+  In a multi-targeting project this is hooked into the *outer* (cross-targeting) build so it runs
+  once, before the per-TFM inner builds are dispatched.  Otherwise each inner build would run it,
+  and running `dotnet tool restore` / `dotnet t4` concurrently on the same files can fail.
+  It is still hooked into BeforeBuild so single-TFM projects (and `dotnet build -f <tfm>`, which
+  skips the outer build entirely) still transform - by then the outputs are up to date so the
+  inner builds of a normal multi-targeting build simply skip it.
+
+  Note: Inputs/Outputs form a 1:1 mapping, so a partially up-to-date build only passes the
+  out-of-date templates to the `dotnet t4` batch below.
+  -->
+  <Target Name="Transform" BeforeTargets="BeforeBuild;DispatchToInnerBuilds" Inputs="@(TextTemplate)" Outputs="@(TextTemplate->'%(RelativeDir)%(Filename).cs')" Condition="$(MSBuildRuntimeType) == 'Core' AND '@(TextTemplate)' != ''">
+    <Message Text="Transforming T4 templates..." Importance="high" />
+    <Exec Command="dotnet tool restore" WorkingDirectory="$(ProjectDir)" />
+    <Exec WorkingDirectory="$(ProjectDir)" Command="dotnet t4 %(TextTemplate.Identity) --out %(TextTemplate.RelativeDir)%(TextTemplate.Filename).cs"/>
+  </Target>
+
+  <!--
+  Include the generated files in the compilation.  This is done separately from Transform as that
+  can be skipped (up to date, or already done by the outer build) while the generated file may not
+  have existed when the default Compile glob was evaluated.
+  -->
+  <Target Name="_IncludeTransformOutput" BeforeTargets="BeforeBuild" DependsOnTargets="Transform" Condition="'@(TextTemplate)' != ''">
+    <ItemGroup>
+      <_TransformOutput Include="@(TextTemplate->'%(RelativeDir)%(Filename).cs')" />
+      <_TransformOutputExists Include="@(_TransformOutput)" Condition="Exists('%(Identity)')" />
+      <Compile Remove="@(_TransformOutputExists)" />
+      <Compile Include="@(_TransformOutputExists)" />
+    </ItemGroup>
+  </Target>
+
+
+<UsingTask
+  TaskName="GetMetadata"
+  TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+  <ParameterGroup>
+    <ItemGroup ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+    <Output Output="true" />
+  </ParameterGroup>
+  <Task>
+    <Using Namespace="System"/>
+    <Code Type="Fragment" Language="cs">
+      <![CDATA[
+          var command = new StringBuilder();
+          foreach (ITaskItem item in ItemGroup )
+          {
+              command.AppendLine(string.Format("ItemName={0}", item));
+              foreach (string parameter in item.MetadataNames)
+              {
+                  command.AppendLine(string.Format("  {0}={1}", parameter, item.GetMetadata(parameter)));
+              }
+              command.AppendLine();
+          }
+          Output = command.ToString();
+      ]]>
+    </Code>
+  </Task>
+</UsingTask>  
+
 </Project>

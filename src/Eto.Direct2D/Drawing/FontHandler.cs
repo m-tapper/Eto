@@ -1,8 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using Eto.Drawing;
 using s = SharpDX;
 using sd = SharpDX.Direct2D1;
 using sw = SharpDX.DirectWrite;
@@ -120,7 +115,10 @@ namespace Eto.Direct2D.Drawing
 				sw.FontStyle fontStyle;
 				sw.FontWeight fontWeight;
 				Conversions.Convert(style, out fontStyle, out fontWeight);
-				Control = FontCollection.GetFontFamily(index).GetFirstMatchingFont(fontWeight, sw.FontStretch.Normal, fontStyle);
+				var dxFontFamily = FontCollection.GetFontFamily(index);
+				Control = dxFontFamily.GetFirstMatchingFont(fontWeight, sw.FontStretch.Normal, fontStyle);
+				if (Control == null)
+					Control = dxFontFamily.GetFont(0);
 			}
         }
 

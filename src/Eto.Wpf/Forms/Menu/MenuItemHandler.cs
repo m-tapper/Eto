@@ -1,40 +1,90 @@
-using System;
-using System.Linq;
-using Eto.Forms;
-using sw = System.Windows;
-using swc = System.Windows.Controls;
-using swm = System.Windows.Media;
-using swi = System.Windows.Input;
-using Eto.Drawing;
-
 namespace Eto.Wpf.Forms.Menu
 {
-	public class MenuItemHandler<TControl, TWidget, TCallback> : MenuHandler<TControl, TWidget, TCallback>, MenuItem.IHandler, swi.ICommand, IWpfValidateBinding
+	interface IMenuItemHandler
+	{
+		void Validate();
+	}
+
+	public class EtoKeyGesture : swi.InputGesture
+	{
+		public EtoKeyGesture(Func<bool> isEnabled, swi.Key key, swi.ModifierKeys modifiers)
+		{
+			_isEnabled = isEnabled ?? throw new ArgumentNullException(nameof(isEnabled));
+			Key = key;
+			Modifiers = modifiers;
+		}
+
+		Func<bool> _isEnabled;
+
+		public swi.Key Key { get; }
+		public swi.ModifierKeys Modifiers { get; }
+
+		public override bool Matches(object targetElement, swi.InputEventArgs inputEventArgs)
+		{
+			// only match if enabled, which is different from WPF's default behavior
+			// this allows specific keys to be used in the application when the menu item is disabled
+			if (!_isEnabled())
+				return false;
+			if (inputEventArgs is swi.KeyEventArgs args && IsDefinedKey(args.Key))
+			{
+				return ((int)Key == (int)args.Key) && (Modifiers == swi.Keyboard.Modifiers);
+			}
+			return false;
+		}
+
+		internal static bool IsDefinedKey(swi.Key key) => key >= swi.Key.None && key <= swi.Key.OemClear;
+	}
+	
+	public static class MenuItemHandler
+	{
+		// note this does not affect the main menu by default due to WPF hard coding a size of 16,16 in its styles.
+		public static Size? DefaultImageSize = new Size(16, 16);
+		internal static readonly object ImageSize_Key = new object();
+	}
+
+	public class MenuItemHandler<TControl, TWidget, TCallback> : MenuHandler<TControl, TWidget, TCallback>, MenuItem.IHandler, swi.ICommand, IWpfValidateBinding, IMenuItemHandler
 		where TControl : swc.MenuItem
 		where TWidget : MenuItem
 		where TCallback: MenuItem.ICallback
 	{
 		Image image;
-		bool openingHandled;
 
 		protected override void Initialize()
 		{
 			base.Initialize();
 			Control.Click += (sender, e) => OnClick();
+			Control.SubmenuOpened += HandleContextMenuOpening;
 		}
 
 		protected virtual void OnClick()
 		{
 			Callback.OnClick(Widget, EventArgs.Empty);
 		}
+		
+		public Size? ImageSize
+		{
+			get => Widget.Properties.Get<Size?>(MenuItemHandler.ImageSize_Key, MenuItemHandler.DefaultImageSize);
+			set
+			{
+				if (Widget.Properties.TrySet(MenuItemHandler.ImageSize_Key, value, MenuItemHandler.DefaultImageSize))
+				{
+					OnImageSizeChanged();
+				}
+			}
+		}
+
+		protected virtual void OnImageSizeChanged()
+		{
+			Control.Icon = image.ToWpfImage(Screen.PrimaryScreen.LogicalPixelSize, ImageSize);
+		}
 
 		public Image Image
 		{
-			get { return image; }
+			get => image;
 			set
 			{
 				image = value;
-				Control.Icon = image.ToWpfImage(Screen.PrimaryScreen.LogicalPixelSize, new Size(16, 16));
+				OnImageSizeChanged();
 			}
 		}
 
@@ -54,7 +104,7 @@ namespace Eto.Wpf.Forms.Menu
 		{
 			get
 			{
-				var keyBinding = Control.InputBindings.OfType<swi.KeyBinding>().FirstOrDefault();
+				var keyBinding = Control.InputBindings.OfType<EtoKeyGesture>().FirstOrDefault();
 				return keyBinding == null ? Keys.None : keyBinding.Key.ToEtoWithModifier(keyBinding.Modifiers);
 			}
 			set
@@ -65,7 +115,8 @@ namespace Eto.Wpf.Forms.Menu
 				{
 					var key = value.ToWpfKey();
 					var modifier = value.ToWpfModifier();
-                    Control.InputBindings.Add(new swi.KeyBinding { Key = key, Modifiers = modifier, Command = this });
+					var gesture = new EtoKeyGesture(() => Enabled, key, modifier);
+					Control.InputBindings.Add(new swi.InputBinding(this, gesture));
 					Control.InputGestureText = value.ToShortcutString();
 					AddKeyBindings(Control);
 				}
@@ -73,15 +124,24 @@ namespace Eto.Wpf.Forms.Menu
 					Control.InputGestureText = null;
 			}
 		}
-
+		
 		public bool Enabled
 		{
-			get { return Control.IsEnabled; }
+			get => Control.IsEnabled;
 			set
 			{
-				Control.IsEnabled = value;
-				OnCanExecuteChanged(EventArgs.Empty);
+				if (Control.IsEnabled != value)
+				{
+					Control.IsEnabled = value;
+					OnCanExecuteChanged(EventArgs.Empty);
+				}
 			}
+		}
+
+		public bool Visible
+		{
+			get => Control.Visibility == sw.Visibility.Visible;
+			set => Control.Visibility = value ? sw.Visibility.Visible : sw.Visibility.Collapsed;
 		}
 
 		public override void AttachEvent(string id)
@@ -97,24 +157,19 @@ namespace Eto.Wpf.Forms.Menu
 			}
 		}
 
-		public void AddMenu(int index, MenuItem item)
+		public virtual void AddMenu(int index, MenuItem item)
 		{
 			Control.Items.Insert(index, item.ControlObject);
 			AddKeyBindings(item.ControlObject as sw.FrameworkElement);
-            if (!openingHandled)
-			{
-				Control.SubmenuOpened += HandleContextMenuOpening;
-				openingHandled = true;
-			}
 		}
 
-		public void RemoveMenu(MenuItem item)
+		public virtual void RemoveMenu(MenuItem item)
 		{
 			RemoveKeyBindings(item.ControlObject as sw.FrameworkElement);
 			Control.Items.Remove(item.ControlObject);
 		}
 
-		public void Clear()
+		public virtual void Clear()
 		{
 			foreach (var item in Control.Items.OfType<sw.FrameworkElement>())
 				RemoveKeyBindings(item);
@@ -126,16 +181,18 @@ namespace Eto.Wpf.Forms.Menu
 			return Enabled;
 		}
 
-		void HandleContextMenuOpening(object sender, sw.RoutedEventArgs e)
+		protected virtual void HandleContextMenuOpening(object sender, sw.RoutedEventArgs e)
 		{
+			if (e.OriginalSource != Control)
+				return;
+
 			var submenu = Widget as ISubmenu;
 			if (submenu != null)
 			{
 				foreach (var item in submenu.Items)
 				{
-					var handler = item.Handler as MenuItemHandler<TControl, TWidget, TCallback>;
-					if (handler != null)
-						handler.Callback.OnValidate(handler.Widget, EventArgs.Empty);
+					var handler = item.Handler as IMenuItemHandler;
+					handler?.Validate();
 				}
 			}
 		}
@@ -168,7 +225,7 @@ namespace Eto.Wpf.Forms.Menu
 		{
 		}
 
-		public void Validate()
+		public virtual void Validate()
 		{
 			Callback.OnValidate(Widget, EventArgs.Empty);
 		}

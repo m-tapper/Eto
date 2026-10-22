@@ -1,17 +1,4 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using swc = System.Windows.Controls;
-using swn = System.Windows.Navigation;
-using sw = System.Windows;
-using swf = System.Windows.Forms;
-using swi = System.Windows.Input;
-using Eto.Forms;
-using System.Runtime.InteropServices;
 using Eto.CustomControls;
-using Eto.Drawing;
-
 namespace Eto.Wpf.Forms.Controls
 {
 	public class SwfWebViewHandler : WpfFrameworkElement<swf.Integration.WindowsFormsHost, WebView, WebView.ICallback>, WebView.IHandler
@@ -57,6 +44,8 @@ namespace Eto.Wpf.Forms.Controls
 				ScriptErrorsSuppressed = true
 			};
 			Browser.HandleCreated += (sender, e) => HookDocumentEvents();
+
+			Browser.ObjectForScripting = new ScriptingObject(this);
 
 			Control = new swf.Integration.WindowsFormsHost
 			{
@@ -123,7 +112,8 @@ namespace Eto.Wpf.Forms.Controls
 				case WebView.DocumentLoadedEvent:
 					this.Browser.DocumentCompleted += (sender, e) =>
 					{
-						Callback.OnDocumentLoaded(Widget, new WebViewLoadedEventArgs(e.Url));
+						var args = new WebViewLoadedEventArgs(e.Url);
+						Callback.OnDocumentLoaded(Widget, args);
 					};
 					break;
 				case WebView.DocumentLoadingEvent:
@@ -142,6 +132,9 @@ namespace Eto.Wpf.Forms.Controls
 					{
 						Callback.OnDocumentTitleChanged(Widget, new WebViewTitleEventArgs(Browser.DocumentTitle));
 					};
+					break;
+				case WebView.MessageReceivedEvent:
+					this.Browser.DocumentCompleted += OnDocumentLoadedInjectScript;
 					break;
 				default:
 					base.AttachEvent(handler);
@@ -176,11 +169,45 @@ namespace Eto.Wpf.Forms.Controls
 			}
 		}
 
+		/// <summary>
+		/// Object exposed to JavaScript via window.external
+		/// </summary>
+		[ComVisible(true)]
+		public class ScriptingObject
+		{
+			private readonly SwfWebViewHandler Owner;
+			public ScriptingObject(SwfWebViewHandler owner)
+			{
+				Owner = owner;
+			}
+
+			/// <summary>
+			/// Called from JS via window.eto.postMessage (window.external.postMessage)
+			/// </summary>
+			public void postMessage(string message)
+			{
+				Owner.Callback.OnMessageReceived(Owner.Widget, new WebViewMessageEventArgs(message));
+
+			}
+		}
+
+		/// <summary>
+		/// Called on document load.
+		/// Wraps calls from window.external.postMessage to window.eto.postMessage
+		/// </summary>
+		private void OnDocumentLoadedInjectScript(object sender, EventArgs args)
+		{
+			ExecuteScript(@"window.eto = { postMessage: function(message) { window.external.postMessage(message); } };");
+		}
+
 		public string ExecuteScript(string script)
 		{
-			var fullScript = string.Format("var fn = function() {{ {0} }}; fn();", script);
-			return Convert.ToString(Browser.Document.InvokeScript("eval", new object[] { fullScript }));
+			var fullScript = string.Format("var _fn = function() {{ {0} }}; _fn();", script);
+			var result = Browser.Document.InvokeScript("eval", new object[] { fullScript });
+			return Convert.ToString(result);
 		}
+
+		public Task<string> ExecuteScriptAsync(string script) => Task.FromResult(ExecuteScript(script));
 
 		public void Stop()
 		{

@@ -1,23 +1,15 @@
-using System;
-using Eto.Forms;
-using Eto.Drawing;
-
 namespace Eto.GtkSharp.Forms.Controls
 {
 	public class RadioButtonHandler : GtkControl<Gtk.RadioButton, RadioButton, RadioButton.ICallback>, RadioButton.IHandler
 	{
-		Gtk.EventBox box;
-		Gtk.AccelLabel label;
+		Gtk.EventBox _box;
+		Gtk.AccelLabel _label;
+		string _text;
+		bool _alwaysShowMnemonic;
 
-		protected override Gtk.Widget FontControl
-		{
-			get { return label; }
-		}
+		protected override Gtk.Widget FontControl => _label;
 
-		public override Gtk.Widget ContainerControl
-		{
-			get { return box; }
-		}
+		public override Gtk.Widget ContainerControl => _box;
 
 		public void Create(RadioButton controller)
 		{
@@ -30,28 +22,32 @@ namespace Eto.GtkSharp.Forms.Controls
 				var inactive = new Gtk.RadioButton(Control);
 				inactive.Active = true;
 			}
-			label = new Gtk.AccelLabel("");
-			Control.Add(label);
+			_label = new Gtk.AccelLabel("");
+			_label.UseUnderline = true;
+			Control.Add(_label);
 			Control.Realized += Connector.Control_Realized;
-
+			Control.Clicked += Connector.HandleClick;
 			Control.Toggled += Connector.HandleCheckedChanged;
-			box = new Gtk.EventBox();
-			box.Child = Control;
+			_box = new Gtk.EventBox();
+			_box.Child = Control;
 		}
 
 		void UpdateLabel()
 		{
 			// if Text present show label, otherwise hide it.
-			if (label.Text != null && label.Text != string.Empty){
-				label.Visible = true;
-			} else {
-				label.Visible = false;
+			if (_label.Text != null && _label.Text != string.Empty)
+			{
+				_label.Visible = true;
+			}
+			else
+			{
+				_label.Visible = false;
 			}
 		}
 
-		void Control_Realized (object sender, EventArgs e)
+		void Control_Realized(object sender, EventArgs e)
 		{
-			UpdateLabel ();
+			UpdateLabel();
 		}
 
 		protected new RadioButtonConnector Connector { get { return (RadioButtonConnector)base.Connector; } }
@@ -65,9 +61,13 @@ namespace Eto.GtkSharp.Forms.Controls
 		{
 			public new RadioButtonHandler Handler { get { return (RadioButtonHandler)base.Handler; } }
 
-			public void HandleCheckedChanged(object sender, EventArgs e)
+			public void HandleCheckedChanged(object sender, EventArgs e) => Handler?.Callback.OnCheckedChanged(Handler.Widget, EventArgs.Empty);
+
+			public void HandleClick(object sender, EventArgs e)
 			{
-				Handler.Callback.OnCheckedChanged(Handler.Widget, EventArgs.Empty);
+				// GTK raises Clicked when other grouped radios are unchecked; only fire for the active (user-clicked) one.
+				if (Handler?.Control?.Active == true)
+					Handler.Callback.OnClick(Handler.Widget, EventArgs.Empty);
 			}
 
 			internal void Control_Realized(object sender, EventArgs e) => Handler?.Control_Realized(sender, e);
@@ -75,10 +75,21 @@ namespace Eto.GtkSharp.Forms.Controls
 
 		public override string Text
 		{
-			get { return label.Text.ToEtoMnemonic(); }
-			set {
-				label.TextWithMnemonic = value.ToPlatformMnemonic();
-				UpdateLabel ();
+			get => _text;
+			set
+			{
+				_text = value;
+				if (_label.UseUnderline)
+				{
+					_label.TextWithMnemonic = _text.ToPlatformMnemonic();
+					_label.Pattern = _alwaysShowMnemonic ? GtkMnemonicHelper.ToPatternWithMnemonicUnderline(_text) : null;
+				}
+				else
+				{
+					_label.Pattern = null;
+					_label.Text = _text;
+				}
+				UpdateLabel();
 			}
 		}
 
@@ -90,12 +101,38 @@ namespace Eto.GtkSharp.Forms.Controls
 
 		public Color TextColor
 		{
-			get { return label.GetForeground(); }
+			get { return _label.GetForeground(); }
 			set
 			{
-				label.SetForeground(value, GtkStateFlags.Normal);
-				label.SetForeground(value, GtkStateFlags.Active);
-				label.SetForeground(value, GtkStateFlags.Prelight);
+				_label.SetForeground(value, GtkStateFlags.Normal);
+				_label.SetForeground(value, GtkStateFlags.Active);
+				_label.SetForeground(value, GtkStateFlags.Prelight);
+			}
+		}
+
+		public bool UseMnemonic
+		{
+			get => _label.UseUnderline;
+			set
+			{
+				if (value == _label.UseUnderline)
+					return; // no change
+				var text = Text;
+				_label.UseUnderline = value;
+				Text = text;
+			}
+		}
+
+		public bool AlwaysShowMnemonic
+		{
+			get => _alwaysShowMnemonic;
+			set
+			{
+				if (_alwaysShowMnemonic == value)
+					return;
+				_alwaysShowMnemonic = value;
+				if (_text != null)
+					Text = _text;
 			}
 		}
 	}

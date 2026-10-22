@@ -1,21 +1,5 @@
-using System;
-using Eto.Forms;
 using Eto.Mac.Forms.Controls;
-using Eto.Drawing;
-#if XAMMAC2
-using AppKit;
-using Foundation;
-using CoreGraphics;
-using ObjCRuntime;
-using CoreAnimation;
-#else
-using MonoMac.AppKit;
-using MonoMac.Foundation;
-using MonoMac.CoreGraphics;
-using MonoMac.ObjCRuntime;
-using MonoMac.CoreAnimation;
-#endif
-
+using Eto.Mac.Forms.Menu;
 namespace Eto.Mac.Forms.Controls
 {
 	public interface ITextBoxWithMaxLength
@@ -51,10 +35,13 @@ namespace Eto.Mac.Forms.Controls
 		[Export("isPartialStringValid:proposedSelectedRange:originalString:originalSelectedRange:errorDescription:")]
 		public bool IsPartialStringValid(ref NSString value, IntPtr proposedSelRange, NSString origString, NSRange origSelRange, ref IntPtr error)
 		{
-			if (Handler.MaxLength > 0)
+			var h = Handler;
+			if (h == null)
+				return true;
+			if (h.MaxLength > 0)
 			{
 				int size = (int)value.Length;
-				if (size > Handler.MaxLength)
+				if (size > h.MaxLength)
 				{
 					return false;
 				}
@@ -69,26 +56,129 @@ namespace Eto.Mac.Forms.Controls
 		}
 	}
 
+	public interface IColorizeCell
+	{
+		Color? Color { get; set; }
+	}
+
+	static class MacTextHitTest
+	{
+		static readonly IntPtr characterIndexForInsertionAtPointSelector = Selector.GetHandle("characterIndexForInsertionAtPoint:");
+
+		public static int GetCharacterIndex(NSControl control, PointF location)
+		{
+			var editor = control.CurrentEditor ?? control.Window?.FieldEditor(true, control) as NSTextView;
+			if (editor == null)
+				return 0;
+
+			var point = editor.ConvertPointFromView(location.ToNS(), control);
+			return (int)Messaging.nuint_objc_msgSend_CGPoint(editor.Handle, characterIndexForInsertionAtPointSelector, point);
+		}
+	}
+
+	public class EtoTextFieldCell : NSTextFieldCell, IColorizeCell
+	{
+		ColorizeView colorize;
+
+		public EtoTextFieldCell()
+		{
+			StringValue = string.Empty;
+		}
+
+		public EtoTextFieldCell(NativeHandle handle) : base(handle)
+		{
+		}
+		
+		
+		public bool AlwaysShowSelection { get; set; }
+
+		public Color? Color
+		{
+			get => colorize?.Color;
+			set => ColorizeView.Create(ref colorize, value);
+		}
+
+		public override void DrawInteriorWithFrame(CGRect cellFrame, NSView inView)
+		{
+			colorize?.End();
+			if (AlwaysShowSelection && ControlView is NSTextField textField && textField.CurrentEditor == null)
+			{
+				var selectedRange = SelectedRange;
+				if (selectedRange.Location != NSRange.NotFound
+					&& selectedRange.Length > 0
+					&& selectedRange.Location + selectedRange.Length <= AttributedStringValue.Length)
+				{
+					var attributedString = new NSMutableAttributedString(AttributedStringValue);
+
+					attributedString.AddAttribute(
+						NSStringAttributeKey.BackgroundColor,
+						NSColor.SelectedTextBackground,
+						selectedRange
+					);
+
+					attributedString.AddAttribute(
+						NSStringAttributeKey.ForegroundColor,
+						NSColor.SelectedText,
+						selectedRange
+					);
+					var titleRect = TitleRectForBounds(cellFrame);
+					titleRect = titleRect.Inset(2, 0); // magic!
+
+					attributedString.DrawString(titleRect);
+					return;
+				}
+			}
+			
+			base.DrawInteriorWithFrame(cellFrame, inView);
+		}
+		
+		NSRange SelectedRange
+		{
+			get
+			{
+				if (ControlView is IMacControl ctl && ctl.WeakHandler?.Target is IMacText textHandler)
+					return textHandler.LastSelection?.ToNS() ?? new NSRange();
+				return new NSRange();
+			}
+		}
+		public override void DrawWithFrame(CGRect cellFrame, NSView inView)
+		{
+			colorize?.Begin(cellFrame, inView);
+			base.DrawWithFrame(cellFrame, inView);
+		}
+	}
+
 	public class EtoTextField : NSTextField, IMacControl, ITextBoxWithMaxLength
 	{
 		public WeakReference WeakHandler { get; set; }
 
-		IMacText TextHandler => WeakHandler.Target as IMacText;
-		ITextBoxWithMaxLength MaxLengthHandler => WeakHandler.Target as ITextBoxWithMaxLength;
+		IMacViewHandler Handler => WeakHandler?.Target as IMacViewHandler;
+		IMacText TextHandler => WeakHandler?.Target as IMacText;
+		ITextBoxWithMaxLength MaxLengthHandler => WeakHandler?.Target as ITextBoxWithMaxLength;
 
 		public int MaxLength { get { return MaxLengthHandler?.MaxLength ?? 0; } }
 
 		public EtoTextField(IntPtr handle)
-			: base(handle)	
+			: base(handle)
 		{
 		}
 
+		EtoFormatter formatter;
+		NSTextFieldCell cell;
+		
+		public new NSTextFieldCell Cell
+		{
+			get => cell ??= base.Cell;
+			set => base.Cell = cell = value;
+		}
+		
 		public EtoTextField()
 		{
+			Cell = new EtoTextFieldCell();
 			Bezeled = true;
 			Editable = true;
 			Selectable = true;
-			Formatter = new EtoFormatter { Handler = this };
+			Formatter = formatter = new EtoFormatter { Handler = this };
 			Cell.Scrollable = true;
 			Cell.Wraps = false;
 			Cell.UsesSingleLineMode = true;
@@ -107,13 +197,46 @@ namespace Eto.Mac.Forms.Controls
 
 		public override void MouseDown(NSEvent theEvent)
 		{
-			base.MouseDown(theEvent);
 			var h = TextHandler;
 			if (h != null && h.AutoSelectMode == AutoSelectMode.Always && CurrentEditor?.SelectedRange.Length == 0)
 			{
 				CurrentEditor?.SelectAll(this);
 			}
+
+			var handler = Handler;
+			if (handler == null)
+				return;
+			
+			if (handler.Widget?.IsDisposed != false) return;
+
+			var args = MacConversions.GetMouseEvent(handler, theEvent, false);
+			if (theEvent.ClickCount >= 2)
+				handler.Callback.OnMouseDoubleClick(handler.Widget, args);
+
+			if (!args.Handled)
+			{
+				handler.Callback.OnMouseDown(handler.Widget, args);
+			}
+			if (!args.Handled)
+			{
+				handler.SuppressMouseEvents++;
+				base.MouseDown(theEvent);
+				handler.SuppressMouseEvents--;
+
+				// some controls use event loops until mouse up, so we need to trigger the mouse up here.
+				handler.TriggerMouseCallback();
+			}
 		}
+
+		public override NSMenu MenuForEvent(NSEvent theEvent)
+		{
+			var handler = Handler;
+			if (handler == null)
+				return base.MenuForEvent(theEvent);
+			var control = (handler.Widget.ContextMenu?.Handler as ContextMenuHandler)?.Control;
+			return control ?? base.MenuForEvent(theEvent);
+		}
+
 	}
 
 
@@ -122,8 +245,8 @@ namespace Eto.Mac.Forms.Controls
 	}
 
 	public class TextBoxHandler<TWidget, TCallback> : MacText<EtoTextField, TWidget, TCallback>, TextBox.IHandler, ITextBoxWithMaxLength, IMacTextBoxHandler
-		where TWidget: TextBox
-		where TCallback: TextBox.ICallback
+		where TWidget : TextBox
+		where TCallback : TextBox.ICallback
 	{
 		protected override void Initialize()
 		{
@@ -139,7 +262,7 @@ namespace Eto.Mac.Forms.Controls
 		protected override SizeF GetNaturalSize(SizeF availableSize)
 		{
 			var size = base.GetNaturalSize(availableSize);
-			size.Width = Math.Max(100, size.Height);
+			size.Width = Math.Max(100, size.Width);
 			return size;
 		}
 
@@ -161,7 +284,7 @@ namespace Eto.Mac.Forms.Controls
 			}
 		}
 
-		static void HandleTextChanged (object sender, EventArgs e)
+		static void HandleTextChanged(object sender, EventArgs e)
 		{
 			var h = GetHandler(sender) as TextBoxHandler<TWidget, TCallback>;
 			h.Callback.OnTextChanged(h.Widget, EventArgs.Empty);
@@ -181,8 +304,13 @@ namespace Eto.Mac.Forms.Controls
 
 		public string PlaceholderText
 		{
-			get { return ((NSTextFieldCell)Control.Cell).PlaceholderString; }
-			set { ((NSTextFieldCell)Control.Cell).PlaceholderString = value ?? string.Empty; }
+			get { return Control.Cell.PlaceholderString; }
+			set { Control.Cell.PlaceholderString = value ?? string.Empty; }
+		}
+
+		public int GetCharacterIndex(PointF location)
+		{
+			return MacTextHitTest.GetCharacterIndex(Control, location);
 		}
 
 		TextBox.ICallback IMacTextBoxHandler.Callback => Callback;
@@ -191,9 +319,33 @@ namespace Eto.Mac.Forms.Controls
 
 		protected override bool TextChanging(string oldText, string newText)
 		{
-			var args = new TextChangingEventArgs(oldText, newText, false);
+			var args = new TextChangingEventArgs(oldText, newText, TextChangeSource.Programmatic);
 			Callback.OnTextChanging(Widget, args);
 			return args.Cancel;
+		}
+
+		public override void OnKeyDown(KeyEventArgs e)
+		{
+			if (Control.CurrentEditor is NSTextView textView && textView.HasMarkedText)
+			{
+				// While an IME composition is in progress the input method owns the keystroke (building, navigating, or committing the composition), so don't surface it as a KeyDown to the app. This matches WPF/Windows, where IME-processed keys aren't raised as key events.
+				// When starting a composition, the KeyDown event is sent for the first key, but not for subsequent keys. Only the last KeyUp for Enter key is sent, but not the KeyDown.
+				return;
+			}
+
+			base.OnKeyDown(e);
+		}
+		
+		public override void OnKeyUp(KeyEventArgs e)
+		{
+			if (Control.CurrentEditor is NSTextView textView && textView.HasMarkedText)
+			{
+				// While an IME composition is in progress the input method owns the keystroke (building, navigating, or committing the composition), so don't surface it as a KeyDown to the app. This matches WPF/Windows, where IME-processed keys aren't raised as key events.
+				// Only the last KeyUp for Enter key is sent, but not the KeyDown.
+				return;
+			}
+
+			base.OnKeyUp(e);
 		}
 	}
 }

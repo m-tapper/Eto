@@ -1,7 +1,4 @@
-using System;
-using Eto.Drawing;
-using Eto.Forms;
-
+#if GTKCORE
 namespace Eto.GtkSharp.Forms
 {
 	public class ColorDialogHandler : WidgetHandler<Gtk.ColorChooserDialog, ColorDialog, ColorDialog.ICallback>, ColorDialog.IHandler
@@ -37,6 +34,7 @@ namespace Eto.GtkSharp.Forms
 			Control.ShowAll();
 			var response = (Gtk.ResponseType)Control.Run();
 			Control.Hide();
+			Control.Unrealize();
 
 			if (response == Gtk.ResponseType.Ok)
 				Callback.OnColorChanged(Widget, EventArgs.Empty);
@@ -45,3 +43,4 @@ namespace Eto.GtkSharp.Forms
 		}
 	}
 }
+#endif

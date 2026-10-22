@@ -1,6 +1,3 @@
-using Eto.Drawing;
-using Eto.Forms;
-
 namespace Eto.Test.Sections.Controls
 {
 	[Section("Controls", typeof(CheckBoxList))]
@@ -57,7 +54,7 @@ namespace Eto.Test.Sections.Controls
 			var control = new Button { Text = "Remove" };
 			control.Click += delegate
 			{
-				foreach (var item in list.SelectedValues)
+				foreach (var item in list.SelectedValues.ToList())
 					list.Items.Remove((ListItem)item);
 			};
 			return control;

@@ -1,6 +1,3 @@
-using Eto.Drawing;
-using Eto.Forms;
-
 namespace Eto.Test.Sections.Behaviors
 {
 	[Section("Behaviors", "Mouse Events")]
@@ -19,7 +16,8 @@ namespace Eto.Test.Sections.Behaviors
 		{
 			if (!showParentEvents.Checked == true && sender == this)
 				return;
-			Log.Write(sender, "{0}, Location: {1}, Buttons: {2}, Modifiers: {3}, Delta: {4}", type, e.Location, e.Buttons, e.Modifiers, e.Delta);
+			var control = sender as Control;
+			Log.Write(sender, $"{type}, Location: {e.Location}, Buttons: {e.Buttons}, Modifiers: {e.Modifiers}, Delta: {e.Delta}, Inverted: {e.IsDirectionInverted}, Screen: {control?.PointToScreen(e.Location)}");
 			if (handleEvents.Checked == true)
 				e.Handled = true;
 		}

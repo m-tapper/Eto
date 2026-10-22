@@ -1,16 +1,11 @@
-﻿using Eto.Drawing;
-using Eto.Forms;
 using NUnit.Framework;
-using System;
-using System.Collections;
-
 namespace Eto.Test.UnitTests.Forms.Controls
 {
 	[TestFixture]
 	public class SplitterTests : TestBase
 	{
-		// currently not working on Gtk due to deferred size allocation
-		bool ReplayTests { get { return !Platform.Instance.IsGtk; } }
+		// currently not working on Gtk or WPF due to deferred size allocation
+		bool ReplayTests => !Platform.Instance.IsGtk && !Platform.Instance.IsWpf;
 
 		static IEnumerable SplitterCases
 		{
@@ -22,7 +17,7 @@ namespace Eto.Test.UnitTests.Forms.Controls
 			}
 		}
 
-		[Test, TestCaseSource("SplitterCases")]
+		[Test, TestCaseSource(nameof(SplitterCases))]
 		public void PositionShouldNotChange(Orientation orient, SplitterFixedPanel fix)
 		{
 			bool replay = false;
@@ -41,16 +36,16 @@ namespace Eto.Test.UnitTests.Forms.Controls
 					{
 						BackgroundColor = Colors.Black
 					}
-				}, 
+				},
 				it =>
 				{
-					Assert.AreEqual(50, it.Position, "Fix: {0}; {1} [replay={2}]", fix, orient, replay);
+					Assert.That(it.Position, Is.EqualTo(50), $"Fix: {fix}; {orient} [replay={replay}]");
 					if (ReplayTests)
 						replay = !replay;
 				}, replay: ReplayTests);
 		}
 
-		[Test, TestCaseSource("SplitterCases")]
+		[Test, TestCaseSource(nameof(SplitterCases))]
 		public void RelativePositionShouldNotChange(Orientation orient, SplitterFixedPanel fix)
 		{
 			bool replay = false;
@@ -73,14 +68,14 @@ namespace Eto.Test.UnitTests.Forms.Controls
 				},
 				it =>
 				{
-					Assert.AreEqual(pos, it.RelativePosition, 1e-2, "Fix: {0}; {1} [replay={2}]", fix, orient, replay);
+					Assert.That(it.RelativePosition, Is.EqualTo(pos).Within(1e-2), $"Fix: {fix}; {orient} [replay={replay}]");
 					if (ReplayTests)
 						replay = !replay;
 				},
 				replay: ReplayTests);
 		}
 
-		[Test, TestCaseSource("SplitterCases")]
+		[Test, TestCaseSource(nameof(SplitterCases))]
 		public void NoPositionShouldAutoSizeBasic(Orientation orient, SplitterFixedPanel fix)
 		{
 			bool replay = false;
@@ -104,36 +99,36 @@ namespace Eto.Test.UnitTests.Forms.Controls
 				it =>
 				{
 					if (orient == Orientation.Horizontal)
-						Assert.AreEqual(it.Panel1.Height, it.Panel2.Height,
-							"Height! Fix: {0}; {1} [replay={2}]", fix, orient, replay);
+						Assert.That(it.Panel1.Height, Is.EqualTo(it.Panel2.Height),
+							$"Height! Fix: {fix}; {orient} [replay={replay}]");
 					else
-						Assert.AreEqual(it.Panel1.Width, it.Panel2.Width,
-							"Width! Fix: {0}; {1} [replay={2}]", fix, orient, replay);
+						Assert.That(it.Panel1.Width, Is.EqualTo(it.Panel2.Width),
+							$"Width! Fix: {fix}; {orient} [replay={replay}]");
 					switch (fix)
 					{
 						case SplitterFixedPanel.Panel1:
 							if (orient == Orientation.Horizontal)
-								Assert.AreEqual(sz.Width, it.Panel1.Width,
-									"P1.Width! Fix: {0}; {1} [replay={2}]", fix, orient, replay);
+								Assert.That(sz.Width, Is.EqualTo(it.Panel1.Width),
+									$"P1.Width! Fix: {fix}; {orient} [replay={replay}]");
 							else
-								Assert.AreEqual(sz.Height, it.Panel1.Height,
-									"P1.Height! Fix: {0}; {1} [replay={2}]", fix, orient, replay);
+								Assert.That(sz.Height, Is.EqualTo(it.Panel1.Height),
+									$"P1.Height! Fix: {fix}; {orient} [replay={replay}]");
 							break;
 						case SplitterFixedPanel.Panel2:
 							if (orient == Orientation.Horizontal)
-								Assert.AreEqual(sz.Width, it.Panel2.Width,
-									"P2.Width! Fix: {0}; {1} [replay={2}]", fix, orient, replay);
+								Assert.That(sz.Width, Is.EqualTo(it.Panel2.Width),
+									$"P2.Width! Fix: {fix}; {orient} [replay={replay}]");
 							else
-								Assert.AreEqual(sz.Height, it.Panel2.Height,
-									"P2.Height! Fix: {0}; {1} [replay={2}]", fix, orient, replay);
+								Assert.That(sz.Height, Is.EqualTo(it.Panel2.Height),
+									$"P2.Height! Fix: {fix}; {orient} [replay={replay}]");
 							break;
 						case SplitterFixedPanel.None:
 							if (orient == Orientation.Horizontal)
-								Assert.AreEqual(it.Panel1.Width, it.Panel2.Width, 1,
-									"Width! Fix: {0}; {1} [replay={2}]", fix, orient, replay);
+								Assert.That(it.Panel1.Width, Is.EqualTo(it.Panel2.Width).Within(1),
+									$"Width! Fix: {fix}; {orient} [replay={replay}]");
 							else
-								Assert.AreEqual(it.Panel1.Height, it.Panel2.Height, 1,
-									"Height! Fix: {0}; {1} [replay={2}]", fix, orient, replay);
+								Assert.That(it.Panel1.Height, Is.EqualTo(it.Panel2.Height).Within(1),
+									$"Height! Fix: {fix}; {orient} [replay={replay}]");
 							break;
 					}
 					if (ReplayTests)
@@ -142,12 +137,14 @@ namespace Eto.Test.UnitTests.Forms.Controls
 				replay: ReplayTests);
 		}
 
-		[Test, TestCaseSource("SplitterCases")]
+		[Test, TestCaseSource(nameof(SplitterCases))]
 		public void NoPositionShouldAutoSizeComplexTest1(Orientation orient, SplitterFixedPanel fix)
 		{
+			bool replay = false;
 			Shown(
 				form =>
 				{
+					form.WindowStyle = WindowStyle.Utility;
 					// +====test 1====+ 
 					// |        |     | 
 					// | tested |     |   Tested splitter is placed inside two other splitters
@@ -157,6 +154,7 @@ namespace Eto.Test.UnitTests.Forms.Controls
 					// +--------+-----+ 
 					var it = new Splitter
 					{
+						ID = "main.panel1.panel1",
 						Orientation = orient,
 						FixedPanel = fix,
 						Panel1 = new Panel
@@ -172,8 +170,10 @@ namespace Eto.Test.UnitTests.Forms.Controls
 					};
 					form.Content = new Splitter
 					{
+						ID = "main",
 						Panel1 = new Splitter
 						{
+							ID = "main.panel1",
 							Orientation = Orientation.Vertical,
 							Panel1 = it,
 							Panel2 = new Panel()
@@ -181,17 +181,19 @@ namespace Eto.Test.UnitTests.Forms.Controls
 						Panel2 = new Panel()
 					};
 					return it;
-				}, 
+				},
 				it =>
 				{
-					Assert.AreEqual(40, it.Position, "{0}; {1}", fix, orient);
-					Assert.AreEqual(fix == SplitterFixedPanel.Panel1 ? 40 : fix == SplitterFixedPanel.Panel2 ? 60 : 0.4, it.RelativePosition, "{0}; {1}", fix, orient);
+					Assert.That(it.Position, Is.EqualTo(40), $"#1 {fix}; {orient}; Replay:{replay}");
+					Assert.That(it.RelativePosition, Is.EqualTo(fix == SplitterFixedPanel.Panel1 ? 40 : fix == SplitterFixedPanel.Panel2 ? 60 : 0.4), "{0}; {1}", $"#2 {fix}; {orient}; Replay:{replay}");
 					var sz = orient == Orientation.Horizontal ? new Size(100 + it.SplitterWidth, 60) : new Size(60, 100 + it.SplitterWidth);
-					Assert.AreEqual(sz, it.Size, "{0}; {1}", fix, orient);
+					Assert.That(it.Size, Is.EqualTo(sz), $"#3 {fix}; {orient}; Replay:{replay}");
+					if (ReplayTests)
+						replay = !replay;
 				}, replay: ReplayTests);
 		}
 
-		[Test, TestCaseSource("SplitterCases")]
+		[Test, TestCaseSource(nameof(SplitterCases))]
 		public void NoPositionShouldAutoSizeComplexTest2(Orientation orient, SplitterFixedPanel fix)
 		{
 			Shown(
@@ -232,17 +234,17 @@ namespace Eto.Test.UnitTests.Forms.Controls
 						}
 					};
 					return it;
-				}, 
+				},
 				it =>
 				{
-					Assert.AreEqual(40, it.Position, "{0}; {1}", fix, orient);
-					Assert.AreEqual(fix == SplitterFixedPanel.Panel1 ? 40 : fix == SplitterFixedPanel.Panel2 ? 60 : 0.4, it.RelativePosition, "{0}; {1}", fix, orient);
+					Assert.That(it.Position, Is.EqualTo(40), $"{fix}; {orient}");
+					Assert.That(it.RelativePosition, Is.EqualTo(fix == SplitterFixedPanel.Panel1 ? 40 : fix == SplitterFixedPanel.Panel2 ? 60 : 0.4), $"{fix}; {orient}");
 					var sz = orient == Orientation.Horizontal ? new Size(100 + it.SplitterWidth, 60) : new Size(60, 100 + it.SplitterWidth);
-					Assert.AreEqual(sz, it.Size, "{0}; {1}", fix, orient);
+					Assert.That(it.Size, Is.EqualTo(sz), $"{fix}; {orient}");
 				}, replay: ReplayTests);
 		}
 
-		[Test, TestCaseSource("SplitterCases")]
+		[Test, TestCaseSource(nameof(SplitterCases))]
 		// Issue #309
 		public void PositionShouldTrackInitialResize(Orientation orient, SplitterFixedPanel fix)
 		{
@@ -253,8 +255,8 @@ namespace Eto.Test.UnitTests.Forms.Controls
 					var it = new Splitter()
 					{
 						Orientation = orient,
-						FixedPanel	= fix,
-						Position	= 50,
+						FixedPanel = fix,
+						Position = 50,
 						Panel1 = new Panel
 						{
 							BackgroundColor = Colors.White
@@ -270,8 +272,9 @@ namespace Eto.Test.UnitTests.Forms.Controls
 				},
 				it =>
 				{
+					it.UpdateLayout();
 					double pos = fix == SplitterFixedPanel.None ? 0.5 : 50.0;
-					Assert.AreEqual(pos, it.RelativePosition, 1e-2, "Fix: {0}; {1} [replay={2}]", fix, orient, replay);
+					Assert.That(it.RelativePosition, Is.EqualTo(pos).Within(1e-2), $"Fix: {fix}; {orient} [replay={replay}]");
 					if (ReplayTests)
 						replay = !replay;
 				},
@@ -287,10 +290,10 @@ namespace Eto.Test.UnitTests.Forms.Controls
 			{
 				var posLabel = new Label();
 				var label = new Label
-				{ 
+				{
 					Text = "Drag the splitter right",
 					TextAlignment = TextAlignment.Center,
-					VerticalAlignment = VerticalAlignment.Center 
+					VerticalAlignment = VerticalAlignment.Center
 				};
 				int stage = 0;
 				var splitter = new Splitter
@@ -366,7 +369,239 @@ namespace Eto.Test.UnitTests.Forms.Controls
 					}
 				};
 			}, -1);
-			Assert.IsTrue(success, message);
+			Assert.That(success, Is.True, message);
+		}
+
+		[Test, ManualTest]
+		public void SplitterInTabControlShouldKeepPosition()
+		{
+			ManualForm("Move the splitter then switch tabs and then back again. The splitter should be at the same position as you left it", form =>
+			{
+				var splitter = new Splitter
+				{
+					FixedPanel = SplitterFixedPanel.Panel1,
+					Orientation = Orientation.Vertical,
+					Panel1 = new Panel { Content = "Panel1" },
+					Panel2 = new Panel { Content = "Panel2" }
+				};
+				var tabs = new TabControl
+				{
+					Size = new Size(300, 300),
+					Pages =
+					{
+						new TabPage { Text = "Tab with splitter", Content = splitter },
+						new TabPage { Text = "Tab 2", Content = "Some content" }
+					}
+				};
+				return tabs;
+			});
+		}
+
+		[Test, ManualTest]
+		public void SplitterChangingShouldAllowRestrictingWithoutArtifacts()
+		{
+			int? outOfBounds = null;
+			ManualForm("Splitter should be restricted between 100 and 200, and start at 300", form =>
+			{
+				form.ClientSize = new Size(600, 300);
+				var splitter = new Splitter
+				{
+
+					Panel1 = new Panel { BackgroundColor = Colors.Blue, Size = new Size(300, 200) },
+					Panel2 = new Panel { BackgroundColor = Colors.Red, Size = new Size(300, 200) }
+				};
+
+				splitter.PositionChanging += (sender, e) =>
+				{
+					System.Diagnostics.Debug.WriteLine($"PositionChanging, Position {splitter.Position}, NewPosition: {e.NewPosition}");
+					if (e.NewPosition < 100)
+					{
+						splitter.Position = 100;
+						e.Cancel = true;
+					}
+					if (e.NewPosition > 200)
+					{
+						splitter.Position = 200;
+						e.Cancel = true;
+					}
+				};
+				splitter.PositionChanged += (sender, e) =>
+				{
+					var position = splitter.Position;
+					System.Diagnostics.Debug.WriteLine($"PositionChanged, Position: {position}");
+					if (position > 200 || position < 100)
+					{
+						outOfBounds = position;
+						form.Close();
+					}
+				};
+
+				return splitter;
+			});
+			Assert.That(outOfBounds, Is.Null, $"#1 - Position went out of bounds 100-200, was {outOfBounds}");
+		}
+
+		[Test, ManualTest]
+		public void SplitterShouldNotMoveWhenChangingCancelled()
+		{
+			int positionChanged = 0;
+			ManualForm("Splitter should not be able to move", form =>
+			{
+				form.ClientSize = new Size(600, 300);
+				var splitter = new Splitter
+				{
+
+					Panel1 = new Panel { BackgroundColor = Colors.Blue, Size = new Size(300, 200) },
+					Panel2 = new Panel { BackgroundColor = Colors.Red, Size = new Size(300, 200) }
+				};
+
+				splitter.PositionChanging += (sender, e) =>
+				{
+					System.Diagnostics.Debug.WriteLine($"PositionChanging, Position {splitter.Position}, NewPosition: {e.NewPosition}");
+					e.Cancel = true;
+				};
+				splitter.PositionChanged += (sender, e) =>
+				{
+					positionChanged++;
+				};
+				return splitter;
+			});
+			Assert.That(positionChanged, Is.EqualTo(0), $"#1 - PositionChanged should not fire");
+		}
+
+		[TestCase(Orientation.Horizontal)]
+		[TestCase(Orientation.Vertical)]
+		public void ZeroRelativePositionShouldNotCrash(Orientation orientation)
+		{
+			Shown(form =>
+			{
+				return new Splitter
+				{
+					Orientation = orientation,
+					Panel1 = new Panel { Size = new Size(200, 200) },
+					Panel2 = new Panel { Size = new Size(200, 200) },
+					FixedPanel = SplitterFixedPanel.None,
+					RelativePosition = 0
+				};
+			},
+			c =>
+			{
+				// if we got here it was successful
+			});
+		}
+
+		[Test]
+		public void SplitterShouldGetAutoSizedAppropriately()
+		{
+			// ManualForm("blah", form =>
+			ShownAsync(form =>
+			{
+				var splitter = new Splitter
+				{
+					FixedPanel = SplitterFixedPanel.Panel2,
+					Orientation = Orientation.Horizontal,
+					Panel1 = new Panel { Content = "Something that should be shown" },
+					Panel2 = new Panel { Size = new Size(200, 200), Content = "Panel2" },
+				};
+				form.Content = splitter;
+				return splitter;
+			},
+			async splitter =>
+			{
+				await Task.Delay(200);
+				Assert.That(splitter.Panel1.Width, Is.GreaterThan(100), "#1");
+				Assert.That(splitter.Panel2.Width, Is.EqualTo(200), "#2");
+			});
+		}
+
+		[TestCase(Orientation.Horizontal)]
+		[TestCase(Orientation.Vertical)]
+		public void GrowingFixedPanelShouldNotGrowSplitterBeyondParent(Orientation orientation)
+		{
+			ShownAsync(form =>
+			{
+				var splitter = new Splitter
+				{
+					Orientation = orientation,
+					FixedPanel = SplitterFixedPanel.Panel2,
+					Panel1 = new Panel { Size = new Size(100, 100) },
+					Panel2 = new Panel { Size = new Size(50, 50) },
+				};
+				form.ClientSize = new Size(300, 300);
+				form.Content = splitter;
+				return splitter;
+			},
+			async splitter =>
+			{
+				// like dragging the splitter towards Panel1, past its size
+				splitter.Position = 20;
+				await Task.Delay(200);
+				var size = orientation == Orientation.Horizontal ? splitter.Width : splitter.Height;
+				Assert.That(size, Is.LessThanOrEqualTo(300));
+			});
+		}
+
+		[TestCase(Orientation.Horizontal)]
+		[TestCase(Orientation.Vertical)]
+		public void PanelsSmallerThanContentShouldBeSizedToSplitter(Orientation orientation)
+		{
+			ShownAsync(form =>
+			{
+				var splitter = new Splitter
+				{
+					Orientation = orientation,
+					FixedPanel = SplitterFixedPanel.Panel2,
+					Panel1 = new Panel { Size = new Size(100, 100) },
+					Panel2 = new Panel { Size = new Size(50, 50) },
+				};
+				form.ClientSize = new Size(300, 300);
+				form.Content = splitter;
+				return splitter;
+			},
+			async splitter =>
+			{
+				splitter.Position = 20;
+				await Task.Delay(200);
+				var horizontal = orientation == Orientation.Horizontal;
+				Assert.That(splitter.Panel1.Location, Is.EqualTo(Point.Empty), "#1");
+				Assert.That(horizontal ? splitter.Panel1.Width : splitter.Panel1.Height, Is.EqualTo(20), "#2");
+
+				splitter.Position = 280;
+				await Task.Delay(200);
+				var size2 = horizontal ? splitter.Panel2.Width : splitter.Panel2.Height;
+				Assert.That(size2, Is.EqualTo(300 - 280 - splitter.SplitterWidth), "#3");
+			});
+		}
+
+		[Test]
+		public void ExpandingContentWithSizeShouldShrinkToPanel()
+		{
+			RichTextArea richText = null;
+			ShownAsync(form =>
+			{
+				richText = new RichTextArea { Size = new Size(-1, 300) };
+				var splitter = new Splitter
+				{
+					Orientation = Orientation.Vertical,
+					FixedPanel = SplitterFixedPanel.Panel2,
+					Panel1 = new StackLayout
+					{
+						HorizontalContentAlignment = HorizontalAlignment.Stretch,
+						Items = { new Button { Text = "Button" }, new StackLayoutItem(richText, expand: true) }
+					},
+					Panel2 = new Panel { Size = new Size(50, 50) },
+				};
+				form.ClientSize = new Size(300, 400);
+				form.Content = splitter;
+				return splitter;
+			},
+			async splitter =>
+			{
+				splitter.Position = 150;
+				await Task.Delay(200);
+				// Size is the preferred size, like other platforms, so it shrinks to fit the panel
+				Assert.That(richText.Bounds.Bottom, Is.LessThanOrEqualTo(150));
+			});
 		}
 	}
 }

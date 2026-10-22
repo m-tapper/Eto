@@ -1,11 +1,3 @@
-using Eto.Forms;
-using System;
-using System.ComponentModel;
-using System.IO;
-using System.Reflection;
-using System.Linq;
-using System.Globalization;
-
 #if PORTABLE
 using Portable.Xaml;
 using Portable.Xaml.Markup;
@@ -86,7 +78,7 @@ namespace Eto.Serialization.Xaml.Extensions
 			}
 
 			// Direct binding
-			var widget = provideValue.TargetObject as BindableWidget;
+			var widget = provideValue.TargetObject as IBindable;
 			var propertyType = propertyInfo.PropertyType;
 			if (widget != null && !typeof(IBinding).GetTypeInfo().IsAssignableFrom(propertyType.GetTypeInfo()))
 			{

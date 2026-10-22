@@ -1,5 +1,3 @@
-using Eto.Drawing;
-using Eto.Forms;
 using Eto.Direct2D.Drawing;
 using Eto.Direct2D.Forms.Controls;
 using Eto.Direct2D.Forms.Printing;
@@ -49,6 +47,7 @@ namespace Eto.Direct2D
 			p.Add<TextureBrush.IHandler>(() => new TextureBrushHandler());
 			p.Add<LinearGradientBrush.IHandler>(() => new LinearGradientBrushHandler());
 			p.Add<RadialGradientBrush.IHandler>(() => new RadialGradientBrushHandler());
+			p.Add<FormattedText.IHandler>(() => new FormattedTextHandler());
 
 			// Forms.Cells
 			p.Add<Drawable.IHandler>(() => new DrawableHandler());

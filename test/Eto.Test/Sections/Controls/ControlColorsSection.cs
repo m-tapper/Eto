@@ -1,9 +1,4 @@
-using Eto.Forms;
-using Eto.Drawing;
 using Eto.Test.Sections.Behaviors;
-using System.Collections.Generic;
-using System;
-
 namespace Eto.Test.Sections.Controls
 {
 	[Section("Controls", "Control Font & Colors")]
@@ -22,7 +17,7 @@ namespace Eto.Test.Sections.Controls
 					update(foregroundPicker.Value);
 			};
 
-			var backgroundPicker = new ColorPicker { AllowAlpha = false }; // alpha not supported for all controls
+			var backgroundPicker = new ColorPicker { AllowAlpha = true }; // alpha not supported for all controls
 			backgroundPicker.ValueChanged += (sender, e) =>
 			{
 				foreach (var update in backgroundUpdates)

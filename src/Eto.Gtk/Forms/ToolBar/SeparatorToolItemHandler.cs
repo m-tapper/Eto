@@ -1,5 +1,3 @@
-using Eto.Forms;
-
 namespace Eto.GtkSharp.Forms.ToolBar
 {
 	public class SeparatorToolItemHandler : ToolItemHandler<Gtk.SeparatorToolItem, SeparatorToolItem>, SeparatorToolItem.IHandler
@@ -10,10 +8,11 @@ namespace Eto.GtkSharp.Forms.ToolBar
 		{
 			Gtk.Toolbar tb = handler.Control;
 			Control = new Gtk.SeparatorToolItem();
+			Control.ShowAll();
+			Control.NoShowAll = true;
+			Control.Visible = Visible;
 			SetType();
 			tb.Insert(Control, index);
-			if (tb.Visible)
-				Control.ShowAll();
 		}
 
 		void SetType()

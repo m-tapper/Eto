@@ -1,40 +1,3 @@
-﻿using System;
-using Eto.Forms;
-using System.Linq;
-using System.Collections.Generic;
-using System.Collections;
-using Eto.Drawing;
-
-#if XAMMAC2
-using AppKit;
-using Foundation;
-using CoreGraphics;
-using ObjCRuntime;
-using CoreAnimation;
-using CoreImage;
-#else
-using MonoMac.AppKit;
-using MonoMac.Foundation;
-using MonoMac.CoreGraphics;
-using MonoMac.ObjCRuntime;
-using MonoMac.CoreAnimation;
-using MonoMac.CoreImage;
-#if Mac64
-using nfloat = System.Double;
-using nint = System.Int64;
-using nuint = System.UInt64;
-#else
-using nfloat = System.Single;
-using nint = System.Int32;
-using nuint = System.UInt32;
-#endif
-#if SDCOMPAT
-using CGSize = System.Drawing.SizeF;
-using CGRect = System.Drawing.RectangleF;
-using CGPoint = System.Drawing.PointF;
-#endif
-#endif
-
 namespace Eto.Mac.Forms.Controls
 {
 	public class ComboBoxHandler : MacControl<NSComboBox, ComboBox, ComboBox.ICallback>, ComboBox.IHandler
@@ -64,6 +27,10 @@ namespace Eto.Mac.Forms.Controls
 				return new Class(typeof(EtoCell));
 			}
 
+			public EtoComboBox(IntPtr handle) : base(handle)
+			{
+			}
+
 			public EtoComboBox()
 			{
 				StringValue = string.Empty;
@@ -72,7 +39,7 @@ namespace Eto.Mac.Forms.Controls
 			}
 		}
 
-		public class EtoCell : NSComboBoxCell
+		public class EtoCell : NSComboBoxCell, IColorizeCell
 		{
 			[Export("tableView:willDisplayCell:forTableColumn:row:")]
 			public void TableWillDisplayCellForTableColumn(NSTableView tableView, NSCell cell, NSTableColumn tableColumn, nint rowIndex)
@@ -91,12 +58,30 @@ namespace Eto.Mac.Forms.Controls
 					window.SetFrame(frame, true);
 				}
 			}
+
+			ColorizeView colorize;
+
+			public Color? Color
+			{
+				get => colorize?.Color;
+				set => ColorizeView.Create(ref colorize, value);
+			}
+
+			public override void DrawInteriorWithFrame(CGRect cellFrame, NSView inView)
+			{
+				colorize?.End();
+				base.DrawInteriorWithFrame(cellFrame, inView);
+			}
+			public override void DrawWithFrame(CGRect cellFrame, NSView inView)
+			{
+				colorize?.Begin(cellFrame, inView);
+				base.DrawWithFrame(cellFrame, inView);
+			}
 		}
 
-		protected override NSComboBox CreateControl()
-		{
-			return new EtoComboBox();
-		}
+		protected override bool DefaultUseAlignmentFrame => true;
+
+		protected override NSComboBox CreateControl() => new EtoComboBox { Handler = this };
 
 		protected override void Initialize()
 		{
@@ -156,7 +141,8 @@ namespace Eto.Mac.Forms.Controls
 		protected override SizeF GetNaturalSize(SizeF availableSize)
 		{
 			var size = base.GetNaturalSize(availableSize);
-			return new SizeF(Math.Max(size.Width, 100), size.Height);
+			// note: natural height reported by NSComboBox.FittingSize is 25, but should be 26.
+			return new SizeF(Math.Max(size.Width, 100), size.Height + 1);
 		}
 
 		static void SelectionDidChange(ObserverActionEventArgs e)
@@ -233,11 +219,10 @@ namespace Eto.Mac.Forms.Controls
 
 		public IEnumerable<object> DataStore
 		{
-			get { return collection == null ? null : collection.Collection; }
+			get => collection?.Collection;
 			set
 			{
-				if (collection != null)
-					collection.Unregister();
+				collection?.Unregister();
 				collection = new CollectionHandler { Handler = this };
 				collection.Register(value);
 			}
@@ -273,19 +258,6 @@ namespace Eto.Mac.Forms.Controls
 			}
 		}
 
-		public override Color BackgroundColor
-		{
-			get { return ((NSComboBoxCell)Control.Cell).BackgroundColor.ToEto(); }
-			set
-			{
-				if (value != BackgroundColor)
-				{
-					((NSComboBoxCell)Control.Cell).BackgroundColor = value.ToNSUI();
-					Control.SetNeedsDisplay();
-				}
-			}
-		}
-
 		public Color TextColor
 		{
 			get { return ((NSComboBoxCell)Control.Cell).TextColor.ToEto(); }
@@ -294,7 +266,7 @@ namespace Eto.Mac.Forms.Controls
 				if (value != TextColor)
 				{
 					((NSComboBoxCell)Control.Cell).TextColor = value.ToNSUI();
-					Control.SetNeedsDisplay();
+					Control.NeedsDisplay = true;
 				}
 			}
 		}
@@ -303,10 +275,9 @@ namespace Eto.Mac.Forms.Controls
 		{
 			get { return Control.StringValue; }
 			set
-			{ 
+			{
 				if (Text != value)
 				{
-					Control.StringValue = value ?? string.Empty;
 					if (collection != null)
 					{
 						var binding = Widget.ItemTextBinding;
@@ -315,6 +286,7 @@ namespace Eto.Mac.Forms.Controls
 
 						SelectedIndex = index;
 					}
+					Control.StringValue = value ?? string.Empty;
 
 				}
 			}
@@ -324,7 +296,7 @@ namespace Eto.Mac.Forms.Controls
 		{
 			get { return !Control.Editable; }
 			set
-			{ 
+			{
 				Control.Editable = !value;
 				if (Control.Window != null)
 					Control.Window.MakeFirstResponder(null); // allows editing if currently focussed, so remove focus
@@ -342,5 +314,25 @@ namespace Eto.Mac.Forms.Controls
 			get { return Control.Bordered; }
 			set { Control.Bordered = value; }
 		}
+
+		IIndirectBinding<string> itemTextBinding;
+		public IIndirectBinding<string> ItemTextBinding
+		{
+			get => itemTextBinding;
+			set
+			{
+				itemTextBinding = value;
+				var dataStore = DataStore;
+				if (dataStore != null)
+				{
+					int selectedIndex = SelectedIndex;
+					// re-add all items
+					DataStore = dataStore;
+					SelectedIndex = selectedIndex;
+				}
+			}
+		}
+
+		public IIndirectBinding<string> ItemKeyBinding { get; set; }
 	}
 }

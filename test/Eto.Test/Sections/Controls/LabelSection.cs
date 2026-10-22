@@ -1,7 +1,3 @@
-using Eto.Forms;
-using Eto.Drawing;
-using System;
-
 namespace Eto.Test.Sections.Controls
 {
 	[Section("Controls", typeof(Label))]
@@ -12,9 +8,12 @@ namespace Eto.Test.Sections.Controls
 			var layout = new DynamicLayout { DefaultSpacing = new Size(5, 5), Padding = new Padding(10) };
 
 			layout.Add(NormalLabel());
-			layout.Add(FontLabel());
+			layout.Add(DisabledLabel());
+			if (Platform.Supports<Font>())
+				layout.Add(FontLabel());
 			layout.Add(WrapLabel());
-			layout.AddSeparateRow(null, UnderlineLabel(), HotkeyLabel(), HotkeyUnderlineLabel(), null);
+			if (Platform.Supports<Font>())
+				layout.AddSeparateRow(null, UnderlineLabel(), HotkeyLabel(), HotkeyUnderlineLabel(), null);
 			layout.AddSeparateRow(null, ColorLabel(), BackgroundColorLabel(), null);
 			layout.Add(CenterLabel());
 			layout.Add(RightLabel());
@@ -29,6 +28,15 @@ namespace Eto.Test.Sections.Controls
 			return new Label
 			{
 				Text = "Normal Label"
+			};
+		}
+		
+		Control DisabledLabel()
+		{
+			return new Label
+			{
+				Text = "Disabled Label",
+				Enabled = false
 			};
 		}
 
@@ -66,7 +74,7 @@ namespace Eto.Test.Sections.Controls
 				Text = "Middle Center Align",
 				TextAlignment = TextAlignment.Center,
 				VerticalAlignment = VerticalAlignment.Center,
-				BackgroundColor = Colors.AliceBlue
+				BackgroundColor = Colors.Gray
 			};
 		}
 
@@ -77,7 +85,7 @@ namespace Eto.Test.Sections.Controls
 				Text = "Bottom Center Align",
 				TextAlignment = TextAlignment.Center,
 				VerticalAlignment = VerticalAlignment.Bottom,
-				BackgroundColor = Colors.AliceBlue
+				BackgroundColor = Colors.Gray
 			};
 		}
 
@@ -127,14 +135,16 @@ namespace Eto.Test.Sections.Controls
 
 		Control WrapLabel()
 		{
-			const string text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.";
 			var label = new Label
 			{
-				Text = text
+				Text = LoremGenerator.GenerateLines(2, 50, 100)
 			};
 
 			var wrapDropDown = new EnumDropDown<WrapMode>();
 			wrapDropDown.SelectedValueBinding.Bind(label, l => l.Wrap);
+
+			var trimmingDropDown = new EnumDropDown<TextTrimming>();
+			trimmingDropDown.SelectedValueBinding.Bind(label, l => l.Trimming);
 
 			var textAlignmentDropDown = new EnumDropDown<TextAlignment>();
 			textAlignmentDropDown.SelectedValueBinding.Bind(label, l => l.TextAlignment);
@@ -156,7 +166,7 @@ namespace Eto.Test.Sections.Controls
 				HorizontalContentAlignment = HorizontalAlignment.Stretch,
 				Items =
 				{
-					TableLayout.Horizontal(5, null, "Wrap:", wrapDropDown, "Font:", fontSelector, null),
+					TableLayout.Horizontal(5, null, "Wrap:", wrapDropDown, "Trimming:", trimmingDropDown, "Font:", fontSelector, null),
 					TableLayout.Horizontal(5, null, testVerticalAlignment, verticalAlignmentDropDown, "TextAlignment:", textAlignmentDropDown, null),
 					spacer(),
 					new TableLayout(

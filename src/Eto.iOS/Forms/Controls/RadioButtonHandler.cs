@@ -1,9 +1,4 @@
-using System;
 using UIKit;
-using Eto.Forms;
-using System.Collections.Generic;
-using System.Linq;
-
 namespace Eto.iOS.Forms.Controls
 {
 	// TODO: use UISwitch instead with custom state images, better accessibility
@@ -30,7 +25,11 @@ namespace Eto.iOS.Forms.Controls
 		{
 			base.Initialize();
 			Control.ShowsTouchWhenHighlighted = false;
-			Control.TouchUpInside += (sender, e) => ApplicationHandler.Instance.AsyncInvoke(() => Checked = true);
+			Control.TouchUpInside += (sender, e) => ApplicationHandler.Instance.AsyncInvoke(() =>
+			{
+				Checked = true;
+				Callback.OnClick(Widget, EventArgs.Empty);
+			});
 		}
 
 		public bool Checked

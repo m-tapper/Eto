@@ -1,13 +1,10 @@
-using Eto.Forms;
-using Eto.Drawing;
-
 namespace Eto.GtkSharp.Forms.Controls
 {
 	public class GroupBoxHandler : GtkPanel<Gtk.Frame, GroupBox, GroupBox.ICallback>, GroupBox.IHandler
 	{
 		public GroupBoxHandler ()
 		{
-			Control = new Gtk.Frame ();
+			Control = new EtoFrame { Handler = this };
 		}
 
 		protected override Gtk.Widget FontControl => Control.LabelWidget ?? new Gtk.Label();

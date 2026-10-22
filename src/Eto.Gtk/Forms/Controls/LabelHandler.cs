@@ -1,28 +1,22 @@
-using System;
-using Eto.Forms;
-using Eto.Drawing;
 using Eto.GtkSharp.Drawing;
 
 namespace Eto.GtkSharp.Forms.Controls
 {
 	public class LabelHandler : GtkControl<LabelHandler.EtoLabel, Label, Label.ICallback>, Label.IHandler
 	{
+		string _text;
+		bool _alwaysShowMnemonic;
 		readonly Gtk.EventBox eventBox;
 		TextAlignment horizontalAlign = TextAlignment.Left;
 		VerticalAlignment verticalAlign = VerticalAlignment.Top;
 
-		public override Gtk.Widget ContainerControl
-		{
-			get { return eventBox; }
-		}
+		public override Gtk.Widget ContainerControl => eventBox;
 
-		public override Gtk.Widget EventControl
-		{
-			get { return eventBox; }
-		}
+		public override Gtk.Widget EventControl => eventBox;
 
 		public class EtoLabel : Gtk.Label
 		{
+#if GTK2
 			int? wrapWidth;
 
 			public void ResetWidth()
@@ -30,7 +24,6 @@ namespace Eto.GtkSharp.Forms.Controls
 				wrapWidth = null;
 			}
 
-			#if GTK2
 			protected override void OnSizeRequested(ref Gtk.Requisition requisition)
 			{
 				int width, height;
@@ -47,17 +40,6 @@ namespace Eto.GtkSharp.Forms.Controls
 					requisition.Height = height;
 				}
 			}
-			#else
-
-			protected override void OnAdjustSizeRequest (Gtk.Orientation orientation, out int minimum_size, out int natural_size)
-			{
-				base.OnAdjustSizeRequest (orientation, out minimum_size, out natural_size);
-				if (orientation == Gtk.Orientation.Horizontal)
-				{
-					minimum_size = natural_size;// wrapWidth ?? natural_size;
-				}
-			}
-			#endif
 
 			protected override void OnSizeAllocated(Gdk.Rectangle allocation)
 			{
@@ -70,15 +52,7 @@ namespace Eto.GtkSharp.Forms.Controls
 				// the allocation may default to 1, in that case ignore OnRealized
 				if (Allocation.Width > 1 && wrapWidth != Allocation.Width)
 				{
-					Layout.Width = (int)(Allocation.Width * Pango.Scale.PangoScale);
-					int pixWidth, pixHeight;
-					Layout.GetPixelSize(out pixWidth, out pixHeight);
-					HeightRequest = pixHeight;
-					wrapWidth = Allocation.Width;
-#if GTK3
-					if (Parent != null)
-						Gtk.Application.Invoke((sender, e) => Parent.QueueResize());
-#endif
+					CalculateHeight(Allocation.Width);
 				}
 
 				base.OnRealized();
@@ -94,74 +68,117 @@ namespace Eto.GtkSharp.Forms.Controls
 				}
 				if (wrapWidth != width)
 				{
-					Layout.Width = (int)(width * Pango.Scale.PangoScale);
-					int pixWidth, pixHeight;
-					Layout.GetPixelSize(out pixWidth, out pixHeight);
-					HeightRequest = pixHeight;
-					wrapWidth = width;
-#if GTK3
-					if (Parent != null)
-						Gtk.Application.Invoke((sender, e) => Parent.QueueResize());
-#endif
+					CalculateHeight(width);
 				}
 			}
+
+			void CalculateHeight(int width)
+			{
+				Layout.Width = (int)(width * Pango.Scale.PangoScale);
+				int pixWidth, pixHeight;
+				Layout.GetPixelSize(out pixWidth, out pixHeight);
+				HeightRequest = pixHeight;
+				wrapWidth = width;
+			}
+#else
+			public void ResetWidth()
+			{
+			}
+
+			protected override Gtk.SizeRequestMode OnGetRequestMode() => Gtk.SizeRequestMode.HeightForWidth;
+
+			protected override void OnGetPreferredWidth(out int minimum_width, out int natural_width)
+			{
+				base.OnGetPreferredWidth(out minimum_width, out natural_width);
+
+				// label should allow shrinking, natural width is used instead
+				minimum_width = 0;
+			}
+
+			protected override void OnGetPreferredHeightForWidth(int width, out int minimum_height, out int natural_height)
+			{
+				if (width == 0)
+					width = int.MaxValue;
+				base.OnGetPreferredHeightForWidth(width, out minimum_height, out natural_height);
+			}
+
+#if GTKCORE
+			protected override void OnGetPreferredHeightAndBaselineForWidth(int width, out int minimum_height, out int natural_height, out int minimum_baseline, out int natural_baseline)
+			{
+				if (width == 0)
+					width = int.MaxValue;
+				base.OnGetPreferredHeightAndBaselineForWidth(width, out minimum_height, out natural_height, out minimum_baseline, out natural_baseline);
+			}
+#endif
+#endif
+
 		}
 
 		public LabelHandler()
 		{
-			eventBox = new Gtk.EventBox();
+			eventBox = new EtoEventBox { Handler = this };
+#if GTK2
 			eventBox.ResizeMode = Gtk.ResizeMode.Immediate;
-			//eventBox.VisibleWindow = false;
+#endif
 			Control = new EtoLabel();
-			Control.SetAlignment(0, 0);
+			Control.UseUnderline = true;
+			Control.Xalign = 0;
+			Control.Yalign = 0;
 			eventBox.Child = Control;
 			Wrap = WrapMode.Word;
 		}
 
+		WrapMode wrap = WrapMode.Word;
+		TextTrimming trimming;
+
 		public WrapMode Wrap
 		{
-			get
-			{
-				if (!Control.LineWrap)
-					return WrapMode.None;
-				if (Control.LineWrapMode == Pango.WrapMode.Char)
-					return WrapMode.Character;
-				return WrapMode.Word;
-			}
+			get => wrap;
 			set
 			{
-				SetWrap(value);
+				wrap = value;
+				SetWrap();
 			}
 		}
 
-		void SetWrap(WrapMode mode)
+		public TextTrimming Trimming
+		{
+			get => trimming;
+			set
+			{
+				trimming = value;
+				SetWrap();
+			}
+		}
+
+		void SetWrap()
 		{
 			Control.ResetWidth();
-			switch (mode)
+			switch (wrap)
 			{
 				case WrapMode.None:
 					Control.Wrap = false;
 					Control.LineWrap = false;
-					Control.SingleLineMode = true;
 					break;
 				case WrapMode.Word:
 					Control.Wrap = true;
 					Control.Layout.Wrap = Pango.WrapMode.WordChar;
 					Control.LineWrapMode = Pango.WrapMode.WordChar;
 					Control.LineWrap = true;
-					Control.SingleLineMode = false;
 					break;
 				case WrapMode.Character:
 					Control.Wrap = true;
 					Control.Layout.Wrap = Pango.WrapMode.Char;
 					Control.LineWrapMode = Pango.WrapMode.Char;
 					Control.LineWrap = true;
-					Control.SingleLineMode = false;
 					break;
 				default:
 					throw new NotSupportedException();
 			}
-			eventBox.QueueResize();
+			// Pango cannot wrap and ellipsize the same layout - setting both makes it ellipsize to a single
+			// line instead of wrapping.  Wrapping wins here, see Eto.Forms.TextTrimming.
+			Control.Ellipsize = wrap == WrapMode.None ? trimming.ToPango() : Pango.EllipsizeMode.None;
+			Control.QueueResize();
 		}
 
 		public override void AttachEvent(string id)
@@ -184,11 +201,24 @@ namespace Eto.GtkSharp.Forms.Controls
 
 		public override string Text
 		{
-			get { return Control.Text.ToEtoMnemonic(); }
+			get => _text;
 			set
 			{
 				Control.ResetWidth();
-				Control.TextWithMnemonic = value.ToPlatformMnemonic();
+				_text = value;
+				if (Control.UseUnderline)
+				{
+					Control.TextWithMnemonic = _text.ToPlatformMnemonic();
+					// Keep Gtk's mnemonic behavior via TextWithMnemonic, and
+					// use the label pattern only to make the underline visible.
+					Control.Pattern = _alwaysShowMnemonic ? GtkMnemonicHelper.ToPatternWithMnemonicUnderline(_text) : null;
+				}
+				else
+				{
+					Control.Pattern = null;
+					Control.Text = _text;
+				}
+				InvalidateMeasure();
 			}
 		}
 
@@ -206,8 +236,11 @@ namespace Eto.GtkSharp.Forms.Controls
 		{
 			Control.ResetWidth();
 			Control.Justify = horizontalAlign.ToGtk();
-			Control.SetAlignment(horizontalAlign.ToAlignment(), verticalAlign.ToAlignment());
+			Control.Xalign = horizontalAlign.ToAlignment();
+			Control.Yalign = verticalAlign.ToAlignment();
+#if GTK2
 			eventBox.ResizeChildren();
+#endif
 		}
 
 		public VerticalAlignment VerticalAlignment
@@ -228,6 +261,32 @@ namespace Eto.GtkSharp.Forms.Controls
 				Control.ResetWidth();
 				base.Font = value;
 				Control.Attributes = value != null ? ((FontHandler)value.Handler).Attributes : null;
+			}
+		}
+
+		public bool UseMnemonic
+		{
+			get => Control.UseUnderline;
+			set
+			{
+				if (value == Control.UseUnderline)
+					return; // no change
+				var text = Text;
+				Control.UseUnderline = value;
+				Text = text;
+			}
+		}
+
+		public bool AlwaysShowMnemonic
+		{
+			get => _alwaysShowMnemonic;
+			set
+			{
+				if (_alwaysShowMnemonic == value)
+					return;
+				_alwaysShowMnemonic = value;
+				if (_text != null)
+					Text = _text;
 			}
 		}
 	}

@@ -1,34 +1,4 @@
-using System;
-using Eto.Forms;
-using Eto.Drawing;
 using Eto.Mac.Forms.Actions;
-#if XAMMAC2
-using AppKit;
-using Foundation;
-using CoreGraphics;
-using ObjCRuntime;
-using CoreAnimation;
-#else
-using MonoMac.AppKit;
-using MonoMac.Foundation;
-using MonoMac.CoreGraphics;
-using MonoMac.ObjCRuntime;
-using MonoMac.CoreAnimation;
-#if Mac64
-using nfloat = System.Double;
-using nint = System.Int64;
-using nuint = System.UInt64;
-#else
-using nfloat = System.Single;
-using nint = System.Int32;
-using nuint = System.UInt32;
-#endif
-#if SDCOMPAT
-using CGSize = System.Drawing.SizeF;
-using CGRect = System.Drawing.RectangleF;
-using CGPoint = System.Drawing.PointF;
-#endif
-#endif
 
 namespace Eto.Mac.Forms.ToolBar
 {
@@ -36,11 +6,17 @@ namespace Eto.Mac.Forms.ToolBar
 	{
 		string Identifier { get; }
 
+		ToolItem Widget { get; }
+
 		NSToolbarItem Control { get; }
 
 		bool Selectable { get; }
 
+		bool Visible { get; }
+
 		void ControlAdded(ToolBarHandler toolbar);
+
+		void SetVisible(bool visible);
 	}
 
 	public interface IToolBarItemHandler : IToolBarBaseItemHandler
@@ -51,25 +27,25 @@ namespace Eto.Mac.Forms.ToolBar
 
 		NSButton Button { get; }
 
-		MacToolBarItemStyle ToolBarItemStyle {get; set;}
+		MacToolBarItemStyle ToolBarItemStyle { get; set; }
 	}
 
 	class ToolBarItemHandlerTarget : NSObject
 	{
 		WeakReference handler;
 
-		public IToolBarItemHandler Handler { get { return (IToolBarItemHandler)handler.Target; } set { handler = new WeakReference(value); } }
+		public IToolBarItemHandler Handler { get => (IToolBarItemHandler)handler?.Target; set => handler = new WeakReference(value); }
 
 		[Export("validateToolbarItem:")]
 		public bool ValidateToolbarItem(NSToolbarItem item)
 		{
-			return Handler.Enabled;
+			return Handler?.Enabled == true;
 		}
 
 		[Export("action")]
 		public bool Action()
 		{
-			Handler.OnClick();
+			Handler?.OnClick();
 			return true;
 		}
 	}
@@ -97,9 +73,15 @@ namespace Eto.Mac.Forms.ToolBar
 		LargeButton
 	}
 
+	static class ToolItemHandler
+	{
+		internal static readonly Selector selAction = new Selector("action");
+		internal static readonly object Visible_Key = new object();
+	}
+
 	public abstract class ToolItemHandler<TControl, TWidget> : WidgetHandler<TControl, TWidget>, ToolItem.IHandler, IToolBarItemHandler
-		where TControl: NSToolbarItem
-		where TWidget: ToolItem
+		where TControl : NSToolbarItem
+		where TWidget : ToolItem
 	{
 		Image image;
 		NSButton button;
@@ -108,46 +90,51 @@ namespace Eto.Mac.Forms.ToolBar
 
 		CGSize ButtonSize
 		{
-			get { 
+			get
+			{
 				if (toolBarItemStyle == MacToolBarItemStyle.Default)
-					return new CGSize (40, 32);
+					return new CGSize(40, 32);
 				else if (toolBarItemStyle == MacToolBarItemStyle.StandardButton)
-					return new CGSize (40, 24);
+					return new CGSize(40, 24);
 				else // large button
-					return new CGSize (40, 32); 
+					return new CGSize(40, 32);
 			}
 		}
 
-		public int ImageSize { get { return (toolBarItemStyle == MacToolBarItemStyle.StandardButton) ? 20 : 32; } }
+		public int ImageSize => (toolBarItemStyle == MacToolBarItemStyle.StandardButton) ? 20 : 32;
+
+		protected virtual bool UseAction => true;
+		protected virtual bool UseButtonStyle => true;
 
 		MacToolBarItemStyle toolBarItemStyle;
 		public MacToolBarItemStyle ToolBarItemStyle
 		{
 			get { return toolBarItemStyle; }
-			set {
+			set
+			{
 				toolBarItemStyle = value; // set the value first because ButtonSize and ImageSize depend on it.
 				button = null;
-				if (value == MacToolBarItemStyle.StandardButton || value == MacToolBarItemStyle.LargeButton) {
-					button = new NSButton {
+				if (UseButtonStyle && (value == MacToolBarItemStyle.StandardButton || value == MacToolBarItemStyle.LargeButton))
+				{
+					button = new NSButton
+					{
 						Title = string.Empty,
 						BezelStyle = NSBezelStyle.TexturedRounded,
 						Bordered = toolBarItemStyle == MacToolBarItemStyle.StandardButton, // no border or bezel in the large button style
 						Frame = new CGRect(CGPoint.Empty, ButtonSize),
 						Target = Control.Target,
 						Action = Control.Action,
+						Image = Control.Image
 					};
 					if (value == MacToolBarItemStyle.LargeButton)
-						button.SetButtonType (NSButtonType.MomentaryChange); // prevents a flash in the large button view. See the comment at the bottom of http://yellowfieldtechnologies.wordpress.com/2011/11/18/nspopover-from-nstoolbaritem/#comments
+						button.SetButtonType(NSButtonType.MomentaryChange); // prevents a flash in the large button view. See the comment at the bottom of http://yellowfieldtechnologies.wordpress.com/2011/11/18/nspopover-from-nstoolbaritem/#comments
 					Control.View = button;
 				}
-				SetImage ();
+				SetImage();
 			}
 		}
-			
-		public NSButton Button
-		{
-			get { return button; }
-		}
+
+		public NSButton Button => button;
 
 		public Color? Tint
 		{
@@ -158,31 +145,51 @@ namespace Eto.Mac.Forms.ToolBar
 			}
 		}
 
-		public virtual string Identifier { get; set; }
-
-
-		protected override TControl CreateControl()
+		string _identifier;
+		public virtual string Identifier
 		{
-			return (TControl)new NSToolbarItem(Identifier);
+			get => _identifier ?? (_identifier = Guid.NewGuid().ToString());
+			set => _identifier = value;
 		}
+
+		protected override TControl CreateControl() => (TControl)new NSToolbarItem(Identifier);
 
 		protected virtual MacToolBarItemStyle DefaultStyle { get { return MacToolBarItemStyle.StandardButton; } }
 
+		protected virtual bool IsButton => true;
+
 		protected override void Initialize()
 		{
-			this.Identifier = Guid.NewGuid().ToString();
-			Control.Target = new ToolBarItemHandlerTarget { Handler = this };
-			Control.Action = selAction;
-			Control.Autovalidates = false;
-			Control.Label = string.Empty;
+			if (IsButton)
+			{
+				if (UseAction)
+				{
+					Control.Target = new ToolBarItemHandlerTarget { Handler = this };
+					Control.Action = ToolItemHandler.selAction;
+				}
+				Control.Autovalidates = false;
+				Control.Label = string.Empty;
 
-			menuItem = new NSMenuItem(string.Empty);
-			menuItem.Action = Control.Action;
-			menuItem.Target = Control.Target;
-			Control.MenuFormRepresentation = menuItem;
-			Control.Enabled = true;
-			this.ToolBarItemStyle = DefaultStyle;
+				Control.Enabled = true;
+				
+				ToolBarItemStyle = DefaultStyle;
+				menuItem = CreateMenuFormRepresentation();
+				Control.MenuFormRepresentation = menuItem;
+			}
 			base.Initialize();
+		}
+
+		protected virtual NSMenuItem CreateMenuFormRepresentation()
+		{
+			if (Control != null)
+			{
+				return new NSMenuItem(string.Empty)
+				{
+					Action = Control.Action,
+					Target = Control.Target
+				};
+			}
+			return null;
 		}
 
 		[Obsolete("Use ToolBarItemStyle and Tint properties instead")]
@@ -193,28 +200,45 @@ namespace Eto.Mac.Forms.ToolBar
 				Tint = Colors.Gray;
 		}
 
-		static readonly Selector selAction = new Selector("action");
+		ToolBarHandler toolbar;
 
 		public virtual void ControlAdded(ToolBarHandler toolbar)
 		{
+			this.toolbar = toolbar;
 		}
 
 		public virtual void InvokeButton()
 		{
 		}
 
-		public string Text
+		public virtual string Text
 		{
-			get { return Control.Label; }
-			set { Control.Label = menuItem.Title = value ?? string.Empty; }
+			get => Control?.Label;
+			set
+			{
+				if (Control == null)
+					return;
+
+				var text = value ?? string.Empty;
+				Control.Label = text;
+				if (menuItem != null)
+				{
+					menuItem.Title = text;
+					Control.MenuFormRepresentation = menuItem;
+				}
+			}
 		}
 
 		public string ToolTip
 		{
-			get { return Control.ToolTip; }
-			set { 
+			get => Control?.ToolTip;
+			set
+			{
 				if (menuItem != null)
+				{
 					menuItem.ToolTip = value ?? string.Empty;
+					Control.MenuFormRepresentation = menuItem;
+				}
 				if (button != null)
 					button.ToolTip = value ?? string.Empty;
 			}
@@ -230,18 +254,29 @@ namespace Eto.Mac.Forms.ToolBar
 			}
 		}
 
-		void SetImage()
+		protected virtual void SetImage()
 		{
+			if (Control == null)
+				return;
 			var nsimage = image.ToNS(ImageSize);
 			if (tint != null && nsimage != null)
 				nsimage = nsimage.Tint(tint.Value.ToNSUI());
 			Control.Image = nsimage;
+
+			var menu = Control.MenuFormRepresentation;
+			if (menu != null)
+				menu.Image = nsimage;
 		}
 
 		public virtual bool Enabled
 		{
-			get { return Control.Enabled; }
-			set { Control.Enabled = value; }
+			get => Control?.Enabled != false;
+			set
+			{
+				if (Control == null)
+					return;
+				Control.Enabled = value;
+			}
 		}
 
 		public virtual bool Selectable { get; }
@@ -251,15 +286,35 @@ namespace Eto.Mac.Forms.ToolBar
 			InvokeButton();
 		}
 
-		NSToolbarItem IToolBarBaseItemHandler.Control
+		NSToolbarItem IToolBarBaseItemHandler.Control => Control;
+
+		public bool Visible
 		{
-			get { return Control; }
+			get
+			{
+				if (menuItem != null)
+					return !menuItem.Hidden;
+				return Widget.Properties.Get<bool>(ToolItemHandler.Visible_Key, true);
+			}
+			set
+			{
+				if (value != Visible)
+				{
+					toolbar?.ChangeVisibility(Widget, value);
+
+					if (menuItem != null)
+						menuItem.Hidden = !value;
+
+					Widget.Properties.Set(ToolItemHandler.Visible_Key, value, true);
+				}
+			}
 		}
+
+		ToolItem IToolBarBaseItemHandler.Widget => Widget;
 
 		public void CreateFromCommand(Command command)
 		{
-			var m = command as MacCommand;
-			if (m != null)
+			if (command is MacCommand m)
 			{
 				Control.Target = null;
 				Control.Action = m.Selector;
@@ -276,6 +331,13 @@ namespace Eto.Mac.Forms.ToolBar
 
 		public virtual void OnUnLoad(EventArgs e)
 		{
+		}
+
+		public void SetVisible(bool visible)
+		{
+			Widget.Properties.Set<bool?>(ToolItemHandler.Visible_Key, visible, true);
+			if (menuItem != null)
+				menuItem.Hidden = !visible;
 		}
 	}
 }

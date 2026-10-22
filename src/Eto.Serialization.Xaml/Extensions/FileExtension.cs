@@ -1,7 +1,3 @@
-using System;
-using System.ComponentModel;
-using System.IO;
-using System.Reflection;
 #if PORTABLE
 using Portable.Xaml;
 using Portable.Xaml.Markup;
@@ -32,7 +28,7 @@ namespace Eto.Serialization.Xaml.Extensions
 			var fileName = FileName;
 			if (!Path.IsPathRooted(fileName))
 				fileName = Path.Combine(EtoEnvironment.GetFolderPath(EtoSpecialFolder.ApplicationResources), fileName);
-			return null;//*PCL File.OpenRead(fileName);
+			return File.OpenRead(fileName);
 		}
 
 		public override object ProvideValue(IServiceProvider serviceProvider)
@@ -45,7 +41,7 @@ namespace Eto.Serialization.Xaml.Extensions
 					var propertyInfo = provideValue.TargetProperty as PropertyInfo;
 					if (propertyInfo != null && !propertyInfo.PropertyType.GetTypeInfo().IsAssignableFrom(typeof(Stream).GetTypeInfo()))
 					{
-						var converter = TypeDescriptor.GetConverter(propertyInfo.PropertyType);
+						var converter = sc.TypeDescriptor.GetConverter(propertyInfo.PropertyType);
 						if (converter != null)
 						{
 							if (converter.CanConvertFrom(typeof(string)))
@@ -53,6 +49,17 @@ namespace Eto.Serialization.Xaml.Extensions
 							if (converter.CanConvertFrom(typeof(Stream)))
 								return converter.ConvertFrom(GetStream());
 						}
+
+#pragma warning disable 618
+						var etoConverter = TypeDescriptor.GetConverter(propertyInfo.PropertyType);
+						if (etoConverter != null)
+						{
+							if (etoConverter.CanConvertFrom(typeof(string)))
+								return etoConverter.ConvertFrom(FileName);
+							if (etoConverter.CanConvertFrom(typeof(Stream)))
+								return etoConverter.ConvertFrom(GetStream());
+						}
+#pragma warning restore 618
 					}
 				}
 				return GetStream();

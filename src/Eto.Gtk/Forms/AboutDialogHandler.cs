@@ -1,8 +1,4 @@
-﻿using System;
-using Eto.Drawing;
-using Eto.Forms;
-
-namespace Eto.GtkSharp.Forms
+﻿namespace Eto.GtkSharp.Forms
 {
 	public class AboutDialogHandler : WidgetHandler<Gtk.AboutDialog, AboutDialog, AboutDialog.ICallback>, AboutDialog.IHandler
 	{
@@ -101,6 +97,7 @@ namespace Eto.GtkSharp.Forms
 			Control.ShowAll();
 			var response = (Gtk.ResponseType)Control.Run();
 			Control.Hide();
+			Control.Unrealize();
 
 			if (response == Gtk.ResponseType.Ok)
 				return DialogResult.Ok;

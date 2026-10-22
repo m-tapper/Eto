@@ -1,9 +1,4 @@
-﻿using System;
-using System.Globalization;
-using System.Linq;
-using Eto.Drawing;
-using Eto.Forms;
-using Eto.GtkSharp.Drawing;
+﻿using Eto.GtkSharp.Drawing;
 using Eto.GtkSharp.Forms;
 using Eto.GtkSharp.Forms.Menu;
 
@@ -143,7 +138,6 @@ namespace Eto.GtkSharp
 				case Gtk.ResponseType.Reject:
 					return DialogResult.Abort;
 				case Gtk.ResponseType.Accept:
-					return DialogResult.Ignore;
 				case Gtk.ResponseType.Ok:
 					return DialogResult.Ok;
 				case Gtk.ResponseType.Cancel:
@@ -196,6 +190,26 @@ namespace Eto.GtkSharp
 					return Gdk.CursorType.Fleur;
 				case CursorType.Pointer:
 					return Gdk.CursorType.Hand2;
+				case CursorType.SizeAll:
+					return Gdk.CursorType.Fleur;
+				case CursorType.SizeLeft:
+					return Gdk.CursorType.LeftSide;
+				case CursorType.SizeTop:
+					return Gdk.CursorType.TopSide;
+				case CursorType.SizeRight:
+					return Gdk.CursorType.RightSide;
+				case CursorType.SizeBottom:
+					return Gdk.CursorType.BottomSide;
+				case CursorType.SizeTopLeft:
+					return Gdk.CursorType.TopLeftCorner;
+				case CursorType.SizeTopRight:
+					return Gdk.CursorType.TopRightCorner;
+				case CursorType.SizeBottomLeft:
+					return Gdk.CursorType.BottomLeftCorner;
+				case CursorType.SizeBottomRight:
+					return Gdk.CursorType.BottomRightCorner;
+				case CursorType.NotAllowed:
+					return Gdk.CursorType.XCursor;
 				default:
 					throw new NotSupportedException();
 			}
@@ -325,15 +339,11 @@ namespace Eto.GtkSharp
 			}
 		}
 
-		public static void Apply(this Pen pen, GraphicsHandler graphics)
-		{
-			((PenHandler)pen.Handler).Apply(pen, graphics);
-		}
+		public static void Apply(this Pen pen, GraphicsHandler graphics) => pen.Apply(graphics.Control);
+		public static void Apply(this Pen pen, Cairo.Context context) => ((PenHandler)pen.Handler).Apply(pen, context);
 
-		public static void Apply(this Brush brush, GraphicsHandler graphics)
-		{
-			((BrushHandler)brush.Handler).Apply(brush.ControlObject, graphics);
-		}
+		public static void Apply(this Brush brush, GraphicsHandler graphics) => brush.Apply(graphics.Control);
+		public static void Apply(this Brush brush, Cairo.Context context) => ((BrushHandler)brush.Handler).Apply(brush.ControlObject, context);
 
 		public static Cairo.LineJoin ToCairo(this PenLineJoin value)
 		{
@@ -508,16 +518,26 @@ namespace Eto.GtkSharp
 
 		public static KeyEventArgs ToEto(this Gdk.EventKey args)
 		{
-			Keys key = args.Key.ToEto() | args.State.ToEtoKey();
+			Keys key;
+
+			// Try to use the base key without modifiers already being applied.
+			// For example: Shift+Semicolon would then actually report that in the key event, instead of Shift+None (technically 'colon', but that isn't mapped)
+			Gdk.Keymap.Default.GetEntriesForKeycode(args.HardwareKeycode, out _, out uint[] keyvals);
+			if (keyvals.Length != 0)
+				key = ((Gdk.Key)keyvals[0]).ToEto() | args.State.ToEtoKey();
+			else
+				key = args.Key.ToEto() | args.State.ToEtoKey();
+
+			KeyEventType keyEventType = args.Type == Gdk.EventType.KeyRelease ? KeyEventType.KeyUp : KeyEventType.KeyDown;
 
 			if (key != Keys.None)
 			{
 				Keys modifiers = (key & Keys.ModifierMask);
 				if (args.KeyValue <= 128 && ((modifiers & ~Keys.Shift) == 0))
-					return new KeyEventArgs(key, KeyEventType.KeyDown, (char)args.KeyValue);
-				return new KeyEventArgs(key, KeyEventType.KeyDown);
+					return new KeyEventArgs(key, keyEventType, (char)args.KeyValue);
+				return new KeyEventArgs(key, keyEventType);
 			}
-			return args.KeyValue <= 128 ? new KeyEventArgs(key, KeyEventType.KeyDown, (char)args.KeyValue) : null;
+			return args.KeyValue <= 128 ? new KeyEventArgs(key, keyEventType, (char)args.KeyValue) : null;
 		}
 
 		public static MouseButtons ToEtoMouseButtons(this Gdk.ModifierType modifiers)
@@ -545,11 +565,6 @@ namespace Eto.GtkSharp
 				default:
 					return MouseButtons.None;
 			}
-		}
-
-		public static PointF ToEtoLocation(this Gdk.EventButton e)
-		{
-			return new PointF((float)e.X, (float)e.Y);
 		}
 
 		public static CellStates ToEto(this Gtk.CellRendererState value)
@@ -687,6 +702,17 @@ namespace Eto.GtkSharp
 			}
 		}
 
+		public static TextAlignment ToEtoAlignment(float align)
+		{
+			if (align == 0f)
+				return TextAlignment.Left;
+			else if (align == 0.5f)
+				return TextAlignment.Center;
+			else if (align == 1f)
+				return TextAlignment.Right;
+			return TextAlignment.Left;
+		}
+
 		public static float ToAlignment(this TextAlignment alignment)
 		{
 			switch (alignment)
@@ -804,24 +830,79 @@ namespace Eto.GtkSharp
 		public static bool SetSelectedUris2(this Gtk.SelectionData data, string[] uris)
 		{
 			int length = uris?.Length ?? 0;
-			IntPtr[] array = new IntPtr[length + 1];
-			for (int i = 0; i < length; i++)
-			{
-				array[i] = GLib.Marshaller.StringToPtrGStrdup(uris[i]);
-			}
-			array[length] = IntPtr.Zero;
-			var result = NativeMethods.gtk_selection_data_set_uris(data.Handle, array);
-			for (int i = 0; i < length; i++)
-			{
-				GLib.Marshaller.Free(array[i]);
-			}
-			return result;
+			var ptr = GLib.Marshaller.StringArrayToNullTermPointer(uris);
+			return NativeMethods.gtk_selection_data_set_uris(data.Handle, ptr);
 		}
 
 		public static string[] GetSelectedUris(this Gtk.SelectionData data)
 		{
 			IntPtr ptr = NativeMethods.gtk_selection_data_get_uris(data.Handle);
 			return GLib.Marshaller.NullTermPtrToStringArray(ptr, true);
+		}
+
+#if GTK3
+		public static void AdjustMinimumSizeRequest(this Size minimumSize, Gtk.Orientation orientation, ref int minimum_size, ref int natural_size)
+		{
+			var min = orientation == Gtk.Orientation.Horizontal ? minimumSize.Width : minimumSize.Height;
+			minimum_size = Math.Max(minimum_size, min);
+			natural_size = Math.Max(natural_size, min);
+		}
+#endif
+
+		public static FormattedTextWrapMode ToEto(this Pango.WrapMode wrap)
+		{
+			switch (wrap)
+			{
+				case Pango.WrapMode.Word:
+					return FormattedTextWrapMode.Word;
+				case Pango.WrapMode.Char:
+				case Pango.WrapMode.WordChar:
+					return FormattedTextWrapMode.Character;
+				default:
+					throw new NotSupportedException();
+			}
+		}
+
+		public static Pango.WrapMode ToPango(this FormattedTextWrapMode wrap)
+		{
+			switch (wrap)
+			{
+				case FormattedTextWrapMode.None:
+					return Pango.WrapMode.Word;
+				case FormattedTextWrapMode.Word:
+					return Pango.WrapMode.Word;
+				case FormattedTextWrapMode.Character:
+					return Pango.WrapMode.Char;
+				default:
+					throw new NotSupportedException();
+			}
+		}
+
+		public static Pango.EllipsizeMode ToPango(this TextTrimming trimming)
+		{
+			switch (trimming)
+			{
+				case TextTrimming.None:
+					return Pango.EllipsizeMode.None;
+				// Pango only ellipsizes at a character boundary, so a word ellipsis falls back to that.
+				case TextTrimming.CharacterEllipsis:
+				case TextTrimming.WordEllipsis:
+					return Pango.EllipsizeMode.End;
+				default:
+					throw new NotSupportedException();
+			}
+		}
+
+		public static Gdk.Cursor ToGdk(this Cursor cursor) => CursorHandler.GetControl(cursor);
+		
+		public static Rectangle GetBounds(this Gdk.Window window)
+		{
+			window.GetPosition(out var x, out var y);
+#if GTK2
+			return new Rectangle(x, y, 0, 0); // who cares, need to drop support for GTK2 anyway
+#else
+			return new Rectangle(x, y, window.Width, window.Height);
+#endif
 		}
 	}
 }

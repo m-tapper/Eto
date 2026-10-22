@@ -1,16 +1,16 @@
-using SD = System.Drawing;
-using SWF = System.Windows.Forms;
-using Eto.Forms;
-using System;
-
 namespace Eto.WinForms.Forms.Menu
 {
-	public class SeparatorMenuItemHandler : MenuHandler<SWF.ToolStripSeparator, SeparatorMenuItem, SeparatorMenuItem.ICallback>, SeparatorMenuItem.IHandler
+	public class SeparatorMenuItemHandler : MenuHandler<swf.ToolStripSeparator, SeparatorMenuItem, SeparatorMenuItem.ICallback>, SeparatorMenuItem.IHandler
 	{
 		
 		public SeparatorMenuItemHandler()
 		{
-			Control = new SWF.ToolStripSeparator();
+			Control = new swf.ToolStripSeparator();
+		}
+
+		public SeparatorMenuItemHandler(swf.ToolStripSeparator sep)
+		{
+			Control = sep;
 		}
 
 		public string Text
@@ -35,6 +35,12 @@ namespace Eto.WinForms.Forms.Menu
 		{
 			get { return false; }
 			set { throw new NotSupportedException(); }
+		}
+
+		public bool Visible
+		{
+			get => Control.Visible;
+			set => Control.Visible = value;
 		}
 	}
 }

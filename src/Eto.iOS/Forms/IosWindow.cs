@@ -1,8 +1,5 @@
-using System;
 using UIKit;
-using Eto.Forms;
 using Eto.iOS.Forms.Controls;
-using Eto.Drawing;
 using Eto.Mac.Forms;
 using sd = System.Drawing;
 using Eto.iOS.Forms.Toolbar;
@@ -30,6 +27,13 @@ namespace Eto.iOS.Forms
 				frame.Location = value.ToNS();
 				this.Control.Frame = frame;
 			}
+		}
+
+		public Rectangle Bounds
+		{
+			// The view's Frame carries both the location and size, so set it in one assignment.
+			get { return Control.Frame.ToEtoRectangle(); }
+			set { Control.Frame = value.ToNS(); }
 		}
 
 		public double Opacity

@@ -1,11 +1,43 @@
-﻿using System;
-using System.Runtime.InteropServices;
-using Eto.Forms;
+﻿#if GTKCORE || GTK3
+using GLib;
 
 namespace Eto.GtkSharp.Forms.Controls
 {
+	public class WebKitJavascriptResult : Opaque
+	{
+		public static GType GType => new GType(NativeMethods.webkit_javascript_result_get_type());
+
+		public WebKitJavascriptResult(IntPtr raw)
+			: base(raw)
+		{
+		}
+
+		public string Value
+		{
+			get
+			{
+				IntPtr jsvalue = NativeMethods.webkit_javascript_result_get_js_value(Handle);
+				return NativeMethods.jsc_value_to_string(jsvalue);
+			}
+		}
+	}
+
+	class WebKitUserContentManager : GLib.InitiallyUnowned
+	{
+		public WebKitUserContentManager(IntPtr raw)
+			: base(raw)
+		{
+		}
+		
+	}
+
 	public class WebViewHandler : GtkControl<Gtk.Widget, WebView, WebView.ICallback>, WebView.IHandler
 	{
+		static WebViewHandler()
+		{
+			GType.Register(WebKitJavascriptResult.GType, typeof(WebKitJavascriptResult));
+		}
+
 		public bool BrowserContextMenuEnabled { get; set; }
 
 		public string DocumentTitle
@@ -42,43 +74,78 @@ namespace Eto.GtkSharp.Forms.Controls
 		EventHandler<WebViewNewWindowEventArgs> openNewWindow;
 
 		readonly Gtk.ScrolledWindow scroll;
-		string jsreturn;
-		bool jsrunning;
+		Queue<TaskCompletionSource<string>> jscs;
+		private readonly FinishScriptExecutionDelegate _finishScriptExecutionDelegate;
 
 		public WebViewHandler()
 		{
 			scroll = new Gtk.ScrolledWindow();
 			Control = new Gtk.Widget(NativeMethods.webkit_web_view_new());
 			scroll.Add(Control);
+			_finishScriptExecutionDelegate = FinishScriptExecution;
 		}
 
 		protected override void Initialize()
 		{
 			base.Initialize();
 
+			// note: these must go through the (weakly referencing) connector, otherwise the native
+			// signal keeps a strong reference to this handler and the control can never be collected.
 			Control.AddSignalHandler(
 				"context-menu",
-				(Action<object, GLib.SignalArgs>)WebViewHandler_ContextMenu,
+				(Action<object, GLib.SignalArgs>)Connector.HandleContextMenu,
 				typeof(GLib.SignalArgs)
 			);
 
 			Control.AddSignalHandler(
 				"notify::title",
-				(Action<object, GLib.SignalArgs>)WebViewHandler_TitleChanged,
+				(Action<object, GLib.SignalArgs>)Connector.HandleTitleChanged,
 				typeof(GLib.SignalArgs)
 			);
 
 			Control.AddSignalHandler(
 				"load-changed",
-				(Action<object, GLib.SignalArgs>)WebViewHandler_LoadChanged,
+				(Action<object, GLib.SignalArgs>)Connector.HandleLoadChanged,
 				typeof(GLib.SignalArgs)
 			);
 
 			Control.AddSignalHandler(
 				"decide-policy",
-				(Action<object, GLib.SignalArgs>)WebViewHandler_DecidePolicy,
+				(Action<object, GLib.SignalArgs>)Connector.HandleDecidePolicy,
 				typeof(GLib.SignalArgs)
 			);
+
+			var scriptSource = "window.eto = { postMessage: function(message) { window.webkit.messageHandlers.__eto__.postMessage(message); } };";
+			IntPtr script = NativeMethods.webkit_user_script_new(scriptSource, NativeMethods.WebKitUserContentInjectedFrames.WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES, NativeMethods.WebKitUserScriptInjectionTime.WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, null, null);
+			NativeMethods.webkit_user_content_manager_add_script(NativeMethods.webkit_web_view_get_user_content_manager(Control.Handle), script);
+		}
+
+		protected new WebViewConnector Connector => (WebViewConnector)base.Connector;
+
+		protected override WeakConnector CreateConnector() => new WebViewConnector();
+
+		protected class WebViewConnector : GtkControlConnector
+		{
+			public new WebViewHandler Handler => (WebViewHandler)base.Handler;
+
+			public void HandleContextMenu(object o, GLib.SignalArgs args) => Handler?.WebViewHandler_ContextMenu(o, args);
+
+			public void HandleTitleChanged(object o, GLib.SignalArgs args) => Handler?.WebViewHandler_TitleChanged(o, args);
+
+			public void HandleLoadChanged(object o, GLib.SignalArgs args) => Handler?.WebViewHandler_LoadChanged(o, args);
+
+			[GLib.ConnectBefore]
+			public void HandleDecidePolicy(object o, GLib.SignalArgs args) => Handler?.WebViewHandler_DecidePolicy(o, args);
+
+			public void HandleMessageReceived(object o, GLib.SignalArgs args) => Handler?.WebViewHandler_MessageReceived(o, args);
+		}
+
+		private void WebViewHandler_MessageReceived(object arg1, SignalArgs args)
+		{
+			if (args.Args[0] is WebKitJavascriptResult result)
+			{
+				Callback.OnMessageReceived(Widget, new WebViewMessageEventArgs(result.Value));
+			}
 		}
 
 		private void WebViewHandler_TitleChanged(object o, GLib.SignalArgs args)
@@ -114,7 +181,7 @@ namespace Eto.GtkSharp.Forms.Controls
 
 			if (type != 0 && type != 1)
 				return;
-			
+
 			var request = NativeMethods.webkit_navigation_policy_decision_get_request(decision.Handle);
 			var uri = new Uri(NativeMethods.webkit_uri_request_get_uri(request));
 
@@ -152,6 +219,18 @@ namespace Eto.GtkSharp.Forms.Controls
 				case WebView.DocumentTitleChangedEvent:
 					titleChanged += (sender, e) => Callback.OnDocumentTitleChanged(Widget, e);
 					break;
+				case WebView.MessageReceivedEvent:
+					var managerPtr = NativeMethods.webkit_web_view_get_user_content_manager(Control.Handle);
+					var manager = new WebKitUserContentManager(managerPtr);
+
+					manager.AddSignalHandler(
+						"script-message-received::__eto__",
+						(Action<object, GLib.SignalArgs>)Connector.HandleMessageReceived,
+						typeof(SignalArgs)
+					);
+
+					NativeMethods.webkit_user_content_manager_register_script_message_handler(managerPtr, "__eto__");
+					break;
 				default:
 					base.AttachEvent(id);
 					break;
@@ -160,20 +239,34 @@ namespace Eto.GtkSharp.Forms.Controls
 
 		public string ExecuteScript(string script)
 		{
-			jsrunning = true;
-			jsreturn = "";
+			var task = ExecuteScriptAsync(script);
 
-			NativeMethods.webkit_web_view_run_javascript(Control.Handle, "function EtOrEtFuN() {" + script + " } EtOrEtFuN();", IntPtr.Zero, (Action<IntPtr, IntPtr, IntPtr>)FinishScriptExecution, IntPtr.Zero);
-
-			while (jsrunning)
+			while (!task.IsCompleted)
+			{
 				Gtk.Application.RunIteration();
+			}
 
-			return jsreturn;
+			return task.Result;
 		}
+
+		public Task<string> ExecuteScriptAsync(string script)
+		{
+			TaskCompletionSource<string> tcs = new TaskCompletionSource<string>();
+			if (jscs == null)
+				jscs = new Queue<TaskCompletionSource<string>>();
+			jscs.Enqueue(tcs);
+
+			NativeMethods.webkit_web_view_run_javascript(Control.Handle, $"function _fn() {{{script}}} _fn();", IntPtr.Zero, _finishScriptExecutionDelegate, IntPtr.Zero);
+
+			return tcs.Task;
+		}
+
+		delegate void FinishScriptExecutionDelegate(IntPtr webview, IntPtr result, IntPtr error);
 
 		private void FinishScriptExecution(IntPtr webview, IntPtr result, IntPtr error)
 		{
 			var jsresult = NativeMethods.webkit_web_view_run_javascript_finish(Control.Handle, result, IntPtr.Zero);
+			var tcs = jscs?.Count > 0 ? jscs?.Dequeue() : null;
 			if (jsresult != IntPtr.Zero)
 			{
 				var context = NativeMethods.webkit_javascript_result_get_global_context(jsresult);
@@ -183,13 +276,16 @@ namespace Eto.GtkSharp.Forms.Controls
 				var strlen = NativeMethods.JSStringGetMaximumUTF8CStringSize(strvalue);
 				var utfvalue = Marshal.AllocHGlobal(strlen);
 				NativeMethods.JSStringGetUTF8CString(strvalue, utfvalue, strlen);
-				jsreturn = NativeMethods.GetString(utfvalue);
+				var jsreturn = NativeMethods.GetString(utfvalue);
 
 				Marshal.FreeHGlobal(utfvalue);
 				NativeMethods.JSStringRelease(strvalue);
+				tcs?.SetResult(jsreturn);
 			}
-
-			jsrunning = false;
+			else
+			{
+				tcs?.SetResult(null);
+			}
 		}
 
 		public void LoadHtml(string html, Uri baseUri)
@@ -233,3 +329,4 @@ namespace Eto.GtkSharp.Forms.Controls
 		}
 	}
 }
+#endif

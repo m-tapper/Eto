@@ -1,130 +1,613 @@
-using Eto.Forms;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using sw = System.Windows;
-using Eto.Drawing;
-using System.Collections.Specialized;
+#if WPF
+using System.Runtime.InteropServices.ComTypes;
+using static System.Windows.WpfDataObjectExtensions;
+using BitmapSource = System.Windows.Media.Imaging.BitmapSource;
+using IDataObject = Eto.Forms.IDataObject;
+using STATSTG = System.Runtime.InteropServices.ComTypes.STATSTG;
 
 namespace Eto.Wpf.Forms
 {
-	public class DataObjectHandler : WidgetHandler<sw.DataObject, DataObject, DataObject.ICallback>, DataObject.IHandler
+
+#elif WINFORMS
+using System.Runtime.InteropServices.ComTypes;
+using static System.Windows.Forms.SwfDataObjectExtensions;
+using sw = System.Windows.Forms;
+using BitmapSource = System.Drawing.Image;
+using IDataObject = Eto.Forms.IDataObject;
+using STATSTG = System.Runtime.InteropServices.ComTypes.STATSTG;
+
+namespace Eto.WinForms.Forms
+{
+
+#endif
+
+	public class DataFormatsHandler : DataFormats.IHandler
 	{
+		public virtual string Text => sw.DataFormats.UnicodeText;
+		public virtual string Html => sw.DataFormats.Html;
+		public virtual string Color => "Color";
+	}
+
+	public class DataObjectHandler : DataObjectHandler<DataObject, DataObject.ICallback>
+	{
+		public override string[] Types => Control.GetFormats();
+
+		public override bool ContainsText => Control.ContainsText();
+
+		public override bool ContainsHtml => Control.ContainsText(sw.TextDataFormat.Html);
+
+		protected override bool InnerContainsImage => Control.ContainsImage();
+
+		protected override bool InnerContainsFileDropList => Control.ContainsFileDropList();
+
 		public DataObjectHandler()
 		{
-			Control = new sw.DataObject();
+			Control = new sw.DataObject(new DragDropLib.DataObject());
+			IsExtended = true;
+		}
+		public DataObjectHandler(sw.IDataObject data)
+			: base(data)
+		{
+		}
+
+		public DataObjectHandler(sw.DataObject data)
+			: base(data)
+		{
+		}
+
+		protected override object InnerGetData(string type)
+		{
+			try
+			{
+				// WPF can throw exceptions here for FileContents, maybe others.
+#pragma warning disable WFDEV005
+				var data = Control.GetData(type);
+#pragma warning restore WFDEV005
+				if (data != null)
+					return data;
+			}
+			catch
+			{
+			}
+
+			try
+			{
+				// fallback to native stream reading
+				return GetStream(type, -1);
+			}
+			catch
+			{
+			}
+			
+			return null;
+		}
+
+		public override void Clear()
+		{
+			if (IsExtended)
+				Control = new sw.DataObject(new DragDropLib.DataObject());
+			else
+				Control = new sw.DataObject();
+			Update();
+		}
+
+		protected override BitmapSource InnerGetImage() => Control.GetImage();
+
+		protected override StringCollection InnerGetFileDropList() => Control.GetFileDropList();
+
+		public override bool Contains(string type) => Control.GetDataPresent(type);
+	}
+
+	public abstract class DataObjectHandler<TWidget, TCallback> : WidgetHandler<sw.DataObject, TWidget, TCallback>, DataObject.IHandler
+		where TWidget: Widget, IDataObject
+	{
+		protected bool IsExtended { get; set; }
+		public const string UniformResourceLocatorW_Format = "UniformResourceLocatorW";
+		public const string UniformResourceLocator_Format = "UniformResourceLocator";
+
+		public virtual sw.IDataObject ReadingDataObject => Control;
+
+		public override IntPtr NativeHandle => Marshal.GetComInterfaceForObject(Control, typeof(System.Runtime.InteropServices.ComTypes.IDataObject));
+
+		public DataObjectHandler()
+		{
 		}
 
 		public DataObjectHandler(sw.IDataObject data)
 		{
+			IsExtended = data is DragDropLib.DataObject;
 			Control = new sw.DataObject(data);
 		}
 
-		public string[] Types => Control.GetFormats();
-
-		public string Text
+		public DataObjectHandler(sw.DataObject data)
 		{
-			get { return Control.ContainsText() ? Control.GetText() : null; }
-			set { Control.SetText(value); }
+			Control = data;
 		}
 
-		public string Html
+		protected virtual void Update()
 		{
-			get { return Control.ContainsText(sw.TextDataFormat.Html) ? Control.GetText(sw.TextDataFormat.Html) : null; }
-			set { Control.SetText(value, sw.TextDataFormat.Html); }
 		}
+
+		public abstract string[] Types { get; }
+
+		public abstract bool ContainsText { get; }
+
+		public virtual string Text
+		{
+			get { return ContainsText ? Control.GetText() : null; }
+			set
+			{
+				if (IsExtended)
+					Control.SetDataEx(sw.DataFormats.UnicodeText, value);
+				else
+					Control.SetText(value);
+				Update();
+			}
+		}
+
+		public abstract bool ContainsHtml { get; }
+
+		public virtual string Html
+		{
+			get { return ContainsHtml ? Control.GetText(sw.TextDataFormat.Html) : null; }
+			set
+			{
+				if (IsExtended)
+					Control.SetDataEx(sw.DataFormats.Html, value);
+				else
+					Control.SetText(value, sw.TextDataFormat.Html);
+				Update();
+			}
+		}
+
+		protected abstract bool InnerContainsImage { get; }
+		protected abstract BitmapSource InnerGetImage();
+
+		public bool ContainsImage => InnerContainsImage || Contains(sw.DataFormats.Dib);
 
 		public Image Image
 		{
-			get { return Control.ContainsImage() ? Control.GetImage().ToEto() : null; }
+			get
+			{
+				if (InnerContainsImage)
+				{
+					// clipboard returns true but the image returned is null sometimes.. hrmph.
+					var img = InnerGetImage().ToEto();
+					if (img != null)
+						return img;
+				}
+				if (Contains(sw.DataFormats.Dib) && GetObjectData(sw.DataFormats.Dib) is Stream stream)
+				{
+					try
+					{
+						if (stream.CanSeek)
+							stream.Position = 0;
+						return Win32.FromDIB(stream);
+					}
+					catch (IOException)
+					{
+						// Invalid or truncated DIB data should be treated as unavailable.
+					}
+				}
+				return null;
+			}
 			set
 			{
 				var dib = (value as Bitmap).ToDIB();
 				if (dib != null)
 				{
 					// write a DIB here, so we can preserve transparency of the image
-					Control.SetData(sw.DataFormats.Dib, dib);
-					return;
+					if (IsExtended)
+						Control.SetDataEx(sw.DataFormats.Dib, dib);
+					else
+						Control.SetData(sw.DataFormats.Dib, dib);
 				}
+#if WPF
+				else if (IsExtended)
+					Control.SetDataEx(sw.DataFormats.Bitmap, value.ToWpf());
+				else
+					Control.SetImage(value.ToWpf());
+#elif WINFORMS
+				else if (IsExtended)
+					Control.SetDataEx(sw.DataFormats.Bitmap, value.ToSD());
+				else
+					Control.SetImage(value.ToSD());
+#endif
 
-				Control.SetImage(value.ToWpf());
+				Update();
 			}
 		}
+
+		protected abstract bool InnerContainsFileDropList { get; }
+
+		protected abstract StringCollection InnerGetFileDropList();
+
+		public bool ContainsUris => InnerContainsFileDropList
+			|| Contains(UniformResourceLocatorW_Format)
+			|| Contains(UniformResourceLocator_Format);
 
 		public Uri[] Uris
 		{
 			get
 			{
-				return Control.ContainsFileDropList() ? Control.GetFileDropList().OfType<string>().Select(s => new Uri(s)).ToArray() : null;
+				var list = InnerContainsFileDropList
+					? InnerGetFileDropList().OfType<string>().Select(s => new Uri(s)) 
+					: null;
+
+				string urlString = null;
+				if (Contains(UniformResourceLocatorW_Format))
+					urlString = GetString(UniformResourceLocatorW_Format, Encoding.Unicode);
+				else if (Contains(UniformResourceLocator_Format))
+					urlString = GetString(UniformResourceLocator_Format);
+
+				if (!string.IsNullOrEmpty(urlString) && Uri.TryCreate(urlString, UriKind.RelativeOrAbsolute, out var uri))
+				{
+					var uris = new[] { uri };
+					list = list?.Concat(uris) ?? uris;
+				}
+				return list?.ToArray();
 			}
 			set
 			{
 				if (value != null)
 				{
+					var coll = value as IList<Uri> ?? value.ToList();
+
+					// file uris
 					var files = new StringCollection();
-					files.AddRange(value.Select(r => r.AbsolutePath).ToArray());
-					Control.SetFileDropList(files);
+					files.AddRange(coll.Where(r => r.IsFile).Select(r => r.LocalPath).ToArray());
+					if (files.Count > 0)
+					{
+						if (IsExtended)
+							Control.SetDataEx(sw.DataFormats.FileDrop, files.OfType<string>().ToArray());
+						else
+							Control.SetFileDropList(files);
+					}
+
+					// web uris (windows only supports one)
+					var url = coll.Where(r => !r.IsFile).FirstOrDefault();
+					if (url != null)
+					{
+						SetString(url.ToString(), UniformResourceLocator_Format);
+						SetString(url.ToString(), UniformResourceLocatorW_Format);
+					}
 				}
 				else
 				{
-					Control.SetFileDropList(null);
+					if (IsExtended)
+					{
+						Control.SetDataEx(sw.DataFormats.FileDrop, null);
+						Control.SetDataEx(UniformResourceLocatorW_Format, null);
+						Control.SetDataEx(UniformResourceLocator_Format, null);
+					}
+					else
+					{
+						Control.SetData(sw.DataFormats.FileDrop, null);
+						Control.SetData(UniformResourceLocatorW_Format, null);
+						Control.SetData(UniformResourceLocator_Format, null);
+					}
 				}
+				Update();
 			}
 		}
 
-		public void Clear()
+		public abstract void Clear();
+
+		public abstract bool Contains(string type);
+
+		protected abstract object InnerGetData(string type);
+		
+		object GetObjectData(string type)
 		{
-			Control = new sw.DataObject();
+			try
+			{
+				// WPF can throw exceptions here for FileContents, maybe others.
+				var data = InnerGetData(type);
+				if (data != null)
+					return data;
+			}
+			catch
+			{
+			}
+
+			try
+			{
+				// fallback to native stream reading
+				return GetStream(type, -1);
+			}
+			catch
+			{
+			}
+
+			return null;
+			
 		}
 
 		public byte[] GetData(string type)
 		{
-			if (Control.GetDataPresent(type))
+			if (Contains(type))
 			{
-				var data = Control.GetData(type);
-				var bytes = data as byte[];
-				if (bytes != null)
-					return bytes;
-				if (data != null)
+				if (type == "FileContents")
 				{
-					var converter = TypeDescriptor.GetConverter(data.GetType());
-					if (converter != null && converter.CanConvertTo(typeof(byte[])))
+					// special case for FileContents, it needs an index.
+					var fileDescriptorStream = GetStream("FileGroupDescriptorW");
+					if (fileDescriptorStream != null)
 					{
-						return converter.ConvertTo(data, typeof(byte[])) as byte[];
+						var reader = new BinaryReader(fileDescriptorStream);
+						// get count of number of files
+						var count = reader.ReadUInt32();
+						if (count == 1)
+						{
+							// Get the contents of the first file only. One should use GetObject() to get an array of memory streams.
+							return GetAsData(GetStream(type, 0));
+						}
 					}
 				}
-				if (data is string)
+
+				var data = GetAsData(GetObjectData(type));
+				if (data != null)
+					return data;
+
+				try
 				{
-					return Encoding.UTF8.GetBytes(data as string);
+					return GetAsData(GetStream(type));
 				}
-				if (data is IConvertible)
+				catch
 				{
-					return Convert.ChangeType(data, typeof(byte[])) as byte[];
+					return null;
 				}
 			}
 			return null;
 		}
 
-		public string GetString(string type)
+		protected byte[] GetAsData(object data)
+		{
+			if (data is byte[] bytes)
+				return bytes;
+			if (data is string str)
+				return Encoding.UTF8.GetBytes(str);
+			if (data is MemoryStream ms)
+				return ms.ToArray();
+			if (data is Stream stream)
+			{
+				ms = new MemoryStream();
+				stream.CopyTo(ms);
+				ms.Position = 0;
+				return ms.ToArray();
+			}
+			if (data != null)
+			{
+				var converter = sc.TypeDescriptor.GetConverter(data.GetType());
+				if (converter != null && converter.CanConvertTo(typeof(byte[])))
+				{
+					return converter.ConvertTo(data, typeof(byte[])) as byte[];
+				}
+#pragma warning disable 618
+				var etoConverter = TypeDescriptor.GetConverter(data.GetType());
+				if (etoConverter != null && etoConverter.CanConvertTo(typeof(byte[])))
+				{
+					return etoConverter.ConvertTo(data, typeof(byte[])) as byte[];
+				}
+#pragma warning restore 618
+			}
+			if (data is IConvertible)
+				return Convert.ChangeType(data, typeof(byte[])) as byte[];
+			return null;
+		}
+
+		public string GetString(string type) => GetString(type, Encoding.UTF8);
+
+		protected string GetString(string type, Encoding encoding)
 		{
 			if (string.IsNullOrEmpty(type))
 				return Text;
-			return Control.GetDataPresent(type) ? Convert.ToString(Control.GetData(type)) : null;
+			if (!Contains(type))
+				return null;
+			return GetAsString(GetObjectData(type), encoding);
+		}
+
+		protected string GetAsString(object data, Encoding encoding)
+		{
+			if (data is string str)
+				return str;
+			if (data is MemoryStream ms)
+				return encoding.GetString(ms.ToArray()).TrimEnd('\0'); // can contain a zero at the end, thanks windows.
+			if (data != null)
+			{
+				var converter = sc.TypeDescriptor.GetConverter(data.GetType());
+				if (converter != null && converter.CanConvertTo(typeof(string)))
+				{
+					return converter.ConvertTo(data, typeof(string)) as string;
+				}
+#pragma warning disable 618
+				var etoConverter = TypeDescriptor.GetConverter(data.GetType());
+				if (etoConverter != null && etoConverter.CanConvertTo(typeof(string)))
+				{
+					return etoConverter.ConvertTo(data, typeof(string)) as string;
+				}
+#pragma warning restore 618
+			}
+			if (data is IConvertible)
+				return Convert.ChangeType(data, typeof(string)) as string;
+			return null;
 		}
 
 		public void SetData(byte[] value, string type)
 		{
-			Control.SetData(type, value);
+			if (IsExtended)
+				Control.SetDataEx(type, value);
+			else
+				Control.SetData(type, value);
+			Update();
 		}
 
 		public void SetString(string value, string type)
 		{
 			if (string.IsNullOrEmpty(type))
-				Control.SetText(value);
+				Text = value;
+			else if (IsExtended)
+				Control.SetDataEx(type, value);
 			else
 				Control.SetData(type, value);
+
+			Update();
+		}
+
+		public void SetDragImage(Bitmap bitmap, PointF offset)
+		{
+#if WPF
+			Control.SetDragImage(bitmap.ToWpf(), offset.ToWpf());
+#elif WINFORMS
+			Control.SetDragImage(bitmap.ToSD(), offset.ToSDPoint());
+#endif
+		}
+
+		public bool TrySetObject(object value, string type)
+		{
+			return false;
+		}
+
+		public bool TryGetObject(string type, Type objectType, out object value)
+		{
+			try
+			{
+				if (type == "FileContents")
+				{
+					// special case for FileContents, it needs an index.
+					var fileDescriptorStream = GetStream("FileGroupDescriptorW");
+					if (fileDescriptorStream != null)
+					{
+						var reader = new BinaryReader(fileDescriptorStream);
+						// get count of number of files
+						var count = reader.ReadUInt32();
+						var contents = new MemoryStream[count];
+						for (int i = 0; i < count; i++)
+						{
+							var stream = GetStream(type, i);
+							contents[i] = stream;
+						}
+						value = contents;
+						return true;
+					}
+				}
+			}
+			catch
+			{
+				// ignore errors
+			}
+
+			try
+			{
+				var obj = ReadingDataObject.GetData(type, true);
+				if (obj != null && (objectType == null || objectType.IsAssignableFrom(obj.GetType())))
+				{
+					value = obj;
+					return true;
+				}
+			}
+			catch
+			{
+				// ignore errors
+			}
+			
+			value = null;
+			return false;
+		}
+
+		public void SetObject(object value, string type) => Widget.SetObject(value, type);
+		public T GetObject<T>(string type) => Widget.GetObject<T>(type);
+		public object GetObject(string type) => Widget.GetObject(type);
+		public object GetObject(string type, Type objectType) => Widget.GetObject(type, objectType);
+		
+		internal MemoryStream GetStream(string format, int index = -1)
+		{
+			var comDataObject = ReadingDataObject as System.Runtime.InteropServices.ComTypes.IDataObject;
+			if (comDataObject == null)
+				return null;
+
+#if WPF
+			var dataFormat = sw.DataFormats.GetDataFormat(format);
+#elif WINFORMS
+			var dataFormat = sw.DataFormats.GetFormat(format);
+#endif
+			if (dataFormat == null)
+				return null;
+
+			var formatetc = new FORMATETC();
+			formatetc.cfFormat = (short)dataFormat.Id;
+			formatetc.dwAspect = DVASPECT.DVASPECT_CONTENT;
+			formatetc.lindex = index;
+			formatetc.tymed = TYMED.TYMED_ISTREAM | TYMED.TYMED_HGLOBAL;
+
+
+			var medium = new STGMEDIUM();
+
+			//using the com IDataObject interface get the data using the defined FORMATETC
+			comDataObject.GetData(ref formatetc, out medium);
+
+			// IDataObject.GetData hands us ownership of the medium, so it has to be released here --
+			// on this thread. A TYMED_ISTREAM medium (the shell's drag context arrives as one) holds a
+			// raw COM interface pointer, and leaving it to be released later means releasing it from
+			// whatever thread gets there first. See DragDropLib.DataObject.Dispose.
+			try
+			{
+				if (medium.tymed == TYMED.TYMED_ISTREAM)
+					return ReadIStream(medium);
+
+				if (medium.tymed == TYMED.TYMED_HGLOBAL)
+					return ReadHGlobal(medium);
+
+				return null;
+			}
+			finally
+			{
+				Win32.ReleaseStgMedium(ref medium);
+			}
+		}
+
+
+		MemoryStream ReadHGlobal(STGMEDIUM medium)
+		{
+			IntPtr source = Win32.GlobalLock(medium.unionmember);
+			
+			// can't lock? Abort
+			if (source == IntPtr.Zero)
+				return null;
+
+			try
+			{
+				int length = Win32.GlobalSize(medium.unionmember);
+
+				byte[] bytes = new byte[length];
+				Marshal.Copy(source, bytes, 0, length);
+				return new MemoryStream(bytes);
+			}
+			finally
+			{
+				Win32.GlobalUnlock(medium.unionmember);
+			}
+		}
+
+		MemoryStream ReadIStream(STGMEDIUM medium)
+		{
+			// GetObjectForIUnknown adds its own reference for the RCW; the caller releases the
+			// medium's. Release the RCW here too so the stream doesn't outlive this call and get
+			// dropped from the finalizer thread.
+			var istream = (IStream)Marshal.GetObjectForIUnknown(medium.unionmember);
+			try
+			{
+				var stat = new STATSTG();
+				istream.Stat(out stat, 0);
+
+				var bytes = new byte[stat.cbSize];
+				istream.Read(bytes, bytes.Length, IntPtr.Zero);
+
+				return new MemoryStream(bytes);
+			}
+			finally
+			{
+				Marshal.ReleaseComObject(istream);
+			}
 		}
 	}
 }

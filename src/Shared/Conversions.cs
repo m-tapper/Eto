@@ -1,10 +1,4 @@
-﻿using System;
-using System.Linq;
-using System.Text;
-using System.Text.RegularExpressions;
-
-
-namespace Eto
+﻿namespace Eto
 {
 
 	/// <summary>
@@ -18,12 +12,12 @@ namespace Eto
 		/// <summary>
 		/// The regex for mnemonic strings to be converted to Eto
 		/// </summary>
-		static Regex EtoMnemonic => _etoMnemonic ?? (_etoMnemonic = new Regex(@"(?<=([^_](?:[_]{2})*)|^)[_](?![_])", RegexOptions.Compiled));
+		internal static Regex EtoMnemonic => _etoMnemonic ?? (_etoMnemonic = new Regex(@"(?<=([^_](?:[_]{2})*)|^)[_](?![_])", RegexOptions.Compiled));
 
 		/// <summary>
 		/// The regex for mnemonic strings to be converted to a platform
 		/// </summary>
-		static Regex PlatformMnemonic => _platformMnemonic ?? (_platformMnemonic = new Regex(@"(?<=([^&](?:[&]{2})*)|^)[&](?![&])", RegexOptions.Compiled));
+		internal static Regex PlatformMnemonic => _platformMnemonic ?? (_platformMnemonic = new Regex(@"(?<=([^&](?:[&]{2})*)|^)[&](?![&])", RegexOptions.Compiled));
 
 		/// <summary>
 		/// Translates degrees to radians.

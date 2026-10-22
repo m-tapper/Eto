@@ -1,39 +1,30 @@
-using System;
-using Eto.Forms;
-
-#if XAMMAC2
-using AppKit;
-using Foundation;
-using CoreGraphics;
-using ObjCRuntime;
-using CoreAnimation;
-using CoreImage;
-#else
-using MonoMac.AppKit;
-using MonoMac.Foundation;
-using MonoMac.CoreGraphics;
-using MonoMac.ObjCRuntime;
-using MonoMac.CoreAnimation;
-using MonoMac.CoreImage;
-#if Mac64
-using nfloat = System.Double;
-using nint = System.Int64;
-using nuint = System.UInt64;
-#else
-using nfloat = System.Single;
-using nint = System.Int32;
-using nuint = System.UInt32;
-#endif
-#if SDCOMPAT
-using CGSize = System.Drawing.SizeF;
-using CGRect = System.Drawing.RectangleF;
-using CGPoint = System.Drawing.PointF;
-#endif
-#endif
-
 namespace Eto.Mac.Forms
 {
-	public class FormHandler : MacWindow<NSWindow, Form, Form.ICallback>, Form.IHandler
+	public class FormHandler : FormHandler<NSWindow>
+	{
+		public FormHandler()
+		{
+		}
+
+		public FormHandler(NSWindow window)
+			: base(window)
+		{
+		}
+		public FormHandler(NSWindowController controller)
+			: base(controller)
+		{
+		}
+
+		protected override NSWindow CreateControl()
+		{
+			return new EtoWindow(new CGRect(0, 0, 200, 200), 
+				NSWindowStyle.Resizable | NSWindowStyle.Closable | NSWindowStyle.Miniaturizable | NSWindowStyle.Titled, 
+				NSBackingStore.Buffered, false);
+		}
+	}
+
+	public class FormHandler<TWindow> : MacWindow<TWindow, Form, Form.ICallback>, Form.IHandler
+		where TWindow: NSWindow
 	{
 		#pragma warning disable 414
 		// keep reference to controller so it doesn't get disposed
@@ -47,20 +38,13 @@ namespace Eto.Mac.Forms
 
 		public FormHandler(NSWindow window)
 		{
-			Control = window;
+			Control = (TWindow)window;
 		}
 
 		public FormHandler(NSWindowController controller)
 		{
 			this.controller = controller;
-			Control = controller.Window;
-		}
-
-		protected override NSWindow CreateControl()
-		{
-			return new EtoWindow(new CGRect(0, 0, 200, 200), 
-				NSWindowStyle.Resizable | NSWindowStyle.Closable | NSWindowStyle.Miniaturizable | NSWindowStyle.Titled, 
-				NSBackingStore.Buffered, false);
+			Control = (TWindow)controller.Window;
 		}
 
 		protected override void Initialize()
@@ -70,24 +54,14 @@ namespace Eto.Mac.Forms
 			base.Initialize();
 		}
 
-		public override void SetOwner(Window owner)
-		{
-			if (owner != null)
-			{
-				var macWindow = owner.Handler as IMacWindow;
-				if (macWindow != null)
-					macWindow.Control.AddChildWindow(Control, NSWindowOrderingMode.Above);
-			}
-			else
-			{
-				var parentWindow = Control.ParentWindow;
-				if (parentWindow != null)
-					parentWindow.RemoveChildWindow(Control);
-			}
-		}
+		protected override bool DefaultSetAsChildWindow => true;
 
-		public void Show()
+		public virtual void Show()
 		{
+			ApplicationHandler.Instance.EnsureActivated(ShowInTaskbar, ShowActivated, Icon);
+			
+			Control.LayoutIfNeeded();
+			Callback.OnLoadComplete(Widget, EventArgs.Empty);
 			var visible = Control.IsVisible;
 			if (ShowActivated)
 			{
@@ -95,15 +69,45 @@ namespace Eto.Mac.Forms
 					Control.MakeKeyWindow();
 				else
 					Control.MakeKeyAndOrderFront(ApplicationHandler.Instance.AppDelegate);
+
+				// setting the owner shows the window, so we have to do this after making the window key
+				EnsureOwner();
 			}
-			else
+			else if (!EnsureOwner())
 			{
+				// only order front when there is no owner as it'll bring the owner above any existing non-child windows
 				Control.OrderFront(ApplicationHandler.Instance.AppDelegate);
 			}
 
 			if (!visible)
 			{
 				FireOnShown();
+			}
+		}
+
+		public override bool Visible
+		{
+			get => base.Visible;
+			set
+			{
+				if (value && !ShowActivated)
+				{
+					if (value != Visible)
+					{
+						if (!EnsureOwner())
+						{
+							// only order front when there is no owner as it'll bring the owner above any existing non-child windows
+							Control.OrderFront(ApplicationHandler.Instance.AppDelegate);
+						}
+						FireOnShown();
+					}
+				}
+				else
+				{
+					base.Visible = value;
+					if (value)
+						EnsureOwner();
+				}
 			}
 		}
 

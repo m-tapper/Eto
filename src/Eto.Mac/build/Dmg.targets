@@ -1,0 +1,178 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="15.0" >
+
+  <PropertyGroup>
+    <!-- File Name of the DMG -->
+    <DmgName Condition="$(DmgName) == ''">$(MacBundleName)</DmgName>
+    <!-- DMG volume name -->
+    <DmgVolumeName Condition="$(DmgVolumeName) == ''">$(DmgName)</DmgVolumeName>
+    <!-- Where to put the DMG. These targets get imported before the sdk's in sdk-style projects, so
+         OutputPath is often still empty here (same reason Mac.targets works out BaseOutputAppPath itself) -
+         prefer that, which is where the .app bundle lands, and only fall back to OutputPath. -->
+    <DmgOutputPath Condition="$(DmgOutputPath) == ''">$(BaseOutputAppPath)</DmgOutputPath>
+    <DmgOutputPath Condition="$(DmgOutputPath) == ''">$(OutputPath)</DmgOutputPath>
+    <DmgOutputPath Condition="$(DmgOutputPath) != ''">$([MSBuild]::EnsureTrailingSlash('$(DmgOutputPath)'))</DmgOutputPath>
+
+    <!-- True to add typical formatting to the DMG, add application shortcut icon, background, auto-open, etc. -->
+    <DmgBeautify Condition="$(DmgBeautify) == ''">True</DmgBeautify>
+
+    <!-- Size of the icons in the DMG -->
+    <DmgIconSize Condition="$(DmgIconSize) == ''">72</DmgIconSize>
+    <!-- Bounds of the Finder window when opened (left, top, right, bottom) -->
+    <DmgBounds Condition="$(DmgBounds) == ''">400, 100, 900, 430</DmgBounds>
+    <!-- Location of your app icon (x, y) -->
+    <DmgAppLocation Condition="$(DmgAppLocation) == ''">120, 150</DmgAppLocation>
+    <!-- Location of the applications shortcut icon (x, y) -->
+    <DmgApplicationsShortcutLocation Condition="$(DmgApplicationsShortcutLocation) == ''">380, 150</DmgApplicationsShortcutLocation>
+    <!-- Image to use for the background, or 'none' to omit the background image.
+         The default is a multi-resolution tiff (made with `tiffutil -cathidpicheck`) so it stays sharp on
+         retina displays. -->
+    <DmgBackgroundImage Condition="$(DmgBackgroundImage) == ''">$(MSBuildThisFileDirectory)Dmg.background.tiff</DmgBackgroundImage>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <_DmgPath>$(DmgOutputPath)$(DmgName).dmg</_DmgPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AvailableItemName Include="DmgContent" />
+  </ItemGroup>
+
+  <Target Name="MacBuildDmg" AfterTargets="MacBuildAppBundle" DependsOnTargets="$(MacBuildDmgDependsOnTargets)">
+  </Target>
+
+  <!-- IntermediateOutputPath is still empty when this file is imported (same reason as DmgOutputPath above),
+       so these have to be worked out once the build is actually running. -->
+  <Target Name="MacInitDmg">
+    <PropertyGroup>
+      <_MacDmgTempPath>$(IntermediateOutputPath)macdmg\</_MacDmgTempPath>
+      <_MacDmgContentPath>$(_MacDmgTempPath)content\</_MacDmgContentPath>
+    </PropertyGroup>
+  </Target>
+
+  <UsingTask TaskName="Eto.Mac.Build.WriteDsStore"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <Task>
+      <Code Type="Class" Source="$(MSBuildThisFileDirectory)DSStore.cs" />
+    </Task>
+  </UsingTask>
+
+  <!-- hdiutil is deprecated in favour of diskutil image, which only exists on macOS 26 and later -->
+  <Target Name="MacDetectDiskImageTool" Condition="$(_UseDiskutilImage) == ''">
+    <Exec Command="diskutil image --help > /dev/null 2>&amp;1" IgnoreExitCode="True" StandardOutputImportance="low">
+      <Output TaskParameter="ExitCode" PropertyName="_DiskutilImageExitCode" />
+    </Exec>
+    <PropertyGroup>
+      <_UseDiskutilImage>False</_UseDiskutilImage>
+      <_UseDiskutilImage Condition="$(_DiskutilImageExitCode) == '0'">True</_UseDiskutilImage>
+    </PropertyGroup>
+  </Target>
+
+  <Target Name="MacCreateDmg" DependsOnTargets="MacBuildAppBundle;MacDetectDiskImageTool;MacInitDmg">
+    <Message Text="Creating $(DmgName).dmg" />
+
+    <!-- Create the output path where the dmg will go if it doesn't exist yet-->
+    <MakeDir Directories="$(DmgOutputPath)" />
+
+    <!-- Remove the old/current temp files and dmg -->
+    <RemoveDir Directories="$(_MacDmgTempPath)" />
+    <Delete Files="$(_DmgPath)" />
+
+    <ItemGroup>
+      <_DmgAppFiles Include="$(OutputAppPath)**\*" />
+      <_DmgFiles Include="@(_DmgAppFiles)" TargetPath="$(MacBundleName).app\%(RecursiveDir)%(Filename)%(Extension)" />
+      <_DmgFiles Include="@(DmgContent)" TargetPath="%(RecursiveDir)%(Filename)%(Extension)" Condition="%(TargetPath) == ''"/>
+      <_DmgFiles Include="@(DmgContent)" Condition="%(TargetPath) != ''"/>
+    </ItemGroup>
+
+    <Copy SourceFiles="@(_DmgFiles)" DestinationFiles="@(_DmgFiles->'$(_MacDmgContentPath)%(TargetPath)')" />
+
+    <Exec Condition="$(_UseDiskutilImage) == 'True'"
+          Command='diskutil image create from --format UDZO --volumeName "$(DmgVolumeName)" "$(_MacDmgContentPath)" "$(_DmgPath)"'
+          StandardOutputImportance="normal" />
+    <Exec Condition="$(_UseDiskutilImage) != 'True'"
+          Command='hdiutil create "$(_DmgPath)" -ov -volname "$(DmgVolumeName)" -format UDZO -fs HFS+ -srcfolder "$(_MacDmgContentPath)"'
+          StandardOutputImportance="normal" />
+
+    <Message Text="$(MSBuildProjectName) -> $(_DmgPath)" Importance="high" />
+  </Target>
+
+  <Target Name="MacBeautifyDmg" Condition="$(DmgBeautify) == 'True'" DependsOnTargets="MacDetectDiskImageTool;MacInitDmg">
+
+    <PropertyGroup>
+      <_TempReadWriteDmgPath>$(_MacDmgTempPath)$(DmgName).rw.dmg</_TempReadWriteDmgPath>
+    </PropertyGroup>
+
+    <!-- convert to read-write so we can modify the dmg directly -->
+    <Exec Condition="$(_UseDiskutilImage) == 'True'"
+          Command='diskutil image create from --format RAW "$(_DmgPath)" "$(_TempReadWriteDmgPath)"'
+          StandardOutputImportance="normal" />
+    <Exec Condition="$(_UseDiskutilImage) != 'True'"
+          Command='hdiutil convert -format UDRW -o "$(_TempReadWriteDmgPath)" "$(_DmgPath)"'
+          StandardOutputImportance="normal" />
+
+    <!-- Attach with nobrowse so Finder doesn't auto-open (and activate for) the mounted volume. Nothing
+         here needs Finder to see it since .DS_Store is written directly, and a volume Finder is browsing
+         both steals focus from anything else running on the machine and tends to block the unmount. -->
+    <Exec Condition="$(_UseDiskutilImage) == 'True'"
+          Command="diskutil image attach --nobrowse '$(_TempReadWriteDmgPath)' | grep -o '/Volumes/.*' | tail -1"
+          ConsoleToMSBuild="True"
+          StandardOutputImportance="normal">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_DmgVolume" />
+    </Exec>
+    <Exec Condition="$(_UseDiskutilImage) != 'True'"
+          Command="hdiutil attach -readwrite -noverify -noautoopen -nobrowse '$(_TempReadWriteDmgPath)' | grep 'Apple_HFS' | awk -v m='\x' -v N='3' '{$N=m$N; print substr($0,index($0,m)+1)}'"
+          ConsoleToMSBuild="True"
+          StandardOutputImportance="normal">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_DmgVolume" />
+    </Exec>
+
+    <PropertyGroup>
+      <DmgBackgroundImage Condition="$(DmgBackgroundImage) != '' AND !Exists($(DmgBackgroundImage)) AND Exists('$(MSBuildProjectDirectory)\$(DmgBackgroundImage)')">$(MSBuildProjectDirectory)\$(DmgBackgroundImage)</DmgBackgroundImage>
+      <_DmgBackgroundImageName>$([System.IO.Path]::GetFileName($(DmgBackgroundImage)))</_DmgBackgroundImageName>
+      <_DmgBackgroundPath Condition="$(DmgBackgroundImage) != '' AND Exists($(DmgBackgroundImage))">.background/$(_DmgBackgroundImageName)</_DmgBackgroundPath>
+    </PropertyGroup>
+
+    <Copy SourceFiles="$(DmgBackgroundImage)"
+          DestinationFiles="$(_DmgVolume)/$(_DmgBackgroundPath)"
+          Condition="$(_DmgBackgroundPath) != ''" />
+
+    <!-- the shortcut Finder used to make as an alias file; a symlink behaves the same when the dmg is mounted -->
+    <Exec Command="ln -s /Applications '$(_DmgVolume)/Applications'" StandardOutputImportance="normal" />
+
+    <!-- Finder takes the window size, icon layout and background entirely from .DS_Store, so write that file
+         directly instead of scripting Finder into doing it for us. -->
+    <WriteDsStore VolumePath="$(_DmgVolume)"
+                  VolumeName="$(DmgVolumeName)"
+                  AppName="$(MacBundleName).app"
+                  ApplicationsName="Applications"
+                  BackgroundImage="$(_DmgBackgroundPath)"
+                  WindowBounds="$(DmgBounds)"
+                  AppLocation="$(DmgAppLocation)"
+                  ApplicationsLocation="$(DmgApplicationsShortcutLocation)"
+                  IconSize="$(DmgIconSize)" />
+
+    <!-- Spotlight/Finder often still hold the volume right after beautifying it, which fails the unmount with
+         "Resource busy", so retry a few times before resorting to a forced unmount. -->
+    <Exec Condition="$(_UseDiskutilImage) == 'True'"
+          Command="sync; for i in 1 2 3 4 5; do diskutil eject '$(_DmgVolume)' &amp;&amp; exit 0; sleep 2; done; diskutil eject force '$(_DmgVolume)'"
+          StandardOutputImportance="normal" />
+    <Exec Condition="$(_UseDiskutilImage) != 'True'"
+          Command="sync; for i in 1 2 3 4 5; do hdiutil detach '$(_DmgVolume)' &amp;&amp; exit 0; sleep 2; done; hdiutil detach -force '$(_DmgVolume)'"
+          StandardOutputImportance="normal" />
+
+    <Delete Files="$(_DmgPath)" />
+    <Exec Condition="$(_UseDiskutilImage) == 'True'"
+          Command='diskutil image create from --format UDZO "$(_TempReadWriteDmgPath)" "$(_DmgPath)"'
+          StandardOutputImportance="normal" />
+    <Exec Condition="$(_UseDiskutilImage) != 'True'"
+          Command='hdiutil convert -format UDZO -o "$(_DmgPath)" "$(_TempReadWriteDmgPath)"'
+          StandardOutputImportance="normal" />
+
+  </Target>
+
+  <Target Name="MacCleanDmg" AfterTargets="Clean" Condition="$(MacIsBuildingBundle) != 'True'">
+    <Delete Files="$(_DmgPath)" />
+  </Target>
+
+</Project>

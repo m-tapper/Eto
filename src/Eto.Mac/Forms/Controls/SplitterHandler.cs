@@ -1,35 +1,3 @@
-using System;
-using Eto.Forms;
-using Eto.Drawing;
-
-#if XAMMAC2
-using AppKit;
-using Foundation;
-using CoreGraphics;
-using ObjCRuntime;
-using CoreAnimation;
-#else
-using MonoMac.AppKit;
-using MonoMac.Foundation;
-using MonoMac.CoreGraphics;
-using MonoMac.ObjCRuntime;
-using MonoMac.CoreAnimation;
-#if Mac64
-using nfloat = System.Double;
-using nint = System.Int64;
-using nuint = System.UInt64;
-#else
-using nfloat = System.Single;
-using nint = System.Int32;
-using nuint = System.UInt32;
-#endif
-#if SDCOMPAT
-using CGSize = System.Drawing.SizeF;
-using CGRect = System.Drawing.RectangleF;
-using CGPoint = System.Drawing.PointF;
-#endif
-#endif
-
 namespace Eto.Mac.Forms.Controls
 {
 	public class SplitterHandler : MacContainer<NSSplitView, Splitter, Splitter.ICallback>, Splitter.IHandler
@@ -45,7 +13,7 @@ namespace Eto.Mac.Forms.Controls
 			size -= SplitterWidth;
 			if (fixedPanel == SplitterFixedPanel.Panel2)
 				return size - pos;
-			return pos / (double)size;
+			return Math.Max(0, Math.Min(1, pos / (double)size));
 		}
 
 		public double RelativePosition
@@ -84,7 +52,10 @@ namespace Eto.Mac.Forms.Controls
 				if (fixedPanel == SplitterFixedPanel.Panel2)
 					position = (int)Math.Round(size - relative);
 				else
+				{
+					relative = Math.Max(0, Math.Min(1, relative));
 					position = (int)Math.Round(size * relative);
+				}
 			}
 			relative = double.NaN;
 		}
@@ -123,6 +94,9 @@ namespace Eto.Mac.Forms.Controls
 			switch (id)
 			{
 				case Splitter.PositionChangedEvent:
+				case Splitter.PositionChangingEvent:
+				case Splitter.PositionChangeStartedEvent:
+				case Splitter.PositionChangeCompletedEvent:
 					// handled by delegate
 					break;
 				default:
@@ -251,6 +225,11 @@ namespace Eto.Mac.Forms.Controls
 				}
 			}
 
+			if (newFrame.Width <= 0)
+				panel1Rect.Width = panel1Rect.X = panel2Rect.Width = panel2Rect.X = 0;
+			if (newFrame.Height <= 0)
+				panel1Rect.Height = panel1Rect.Y = panel2Rect.Height = panel2Rect.Y = 0;
+
 			splitView.Subviews[0].Frame = panel1Rect;
 			splitView.Subviews[1].Frame = panel2Rect;
 			//Console.WriteLine($"Splitter resize: frame: {splitView.Frame.Size}, position: {position}, panel1({panel1?.Visible}): {panel1Rect}, panel2({panel2?.Visible}): {panel2Rect}");
@@ -293,6 +272,14 @@ namespace Eto.Mac.Forms.Controls
 					proposedPosition = (nfloat)Math.Min(totalSize, proposedPosition);
 				}
 
+				h.TriggerChangeStarted();
+
+				var args = new SplitterPositionChangingEventArgs((int)Math.Round(proposedPosition));
+				h.Callback.OnPositionChanging(h.Widget, args);
+				if (args.Cancel)
+					return h.Position;
+
+
 				return (nfloat)Math.Round(proposedPosition);
 			}
 			
@@ -314,12 +301,18 @@ namespace Eto.Mac.Forms.Controls
 					var mainFrame = h.Control.Frame;
 					if (mainFrame.Width <= 1 || mainFrame.Height <= 1)
 						return;
-					h.position = h.Control.IsVertical ? (int)subview.Frame.Width : (int)subview.Frame.Height;
-					h.Callback.OnPositionChanged(h.Widget, EventArgs.Empty);
+					var newPosition = h.Control.IsVertical ? (int)subview.Frame.Width : (int)subview.Frame.Height;
+					h.TriggerChangeStarted();
+					if (newPosition != h.position)
+					{
+						h.position = newPosition;
+						h.Callback.OnPositionChanged(h.Widget, EventArgs.Empty);
+					}
 				}
 			}
+
 		}
-		// stupid hack for OSX 10.5 so that mouse down/drag/up events fire in children properly..
+
 		public class EtoSplitView : NSSplitView, IMacControl
 		{
 			public WeakReference WeakHandler { get; set; }
@@ -341,35 +334,60 @@ namespace Eto.Mac.Forms.Controls
 
 			public override void MouseDown(NSEvent theEvent)
 			{
-				var cursor = NSCursor.CurrentCursor;
-				if (cursor == NSCursor.ResizeLeftCursor || cursor == NSCursor.ResizeRightCursor || cursor == NSCursor.ResizeLeftRightCursor
-				    || cursor == NSCursor.ResizeUpCursor || cursor == NSCursor.ResizeDownCursor || cursor == NSCursor.ResizeUpDownCursor)
-					base.MouseDown(theEvent);
-			}
-
-			public override void MouseDragged(NSEvent theEvent)
-			{
-				var cursor = NSCursor.CurrentCursor;
-				if (cursor == NSCursor.ResizeLeftCursor || cursor == NSCursor.ResizeRightCursor || cursor == NSCursor.ResizeLeftRightCursor
-				    || cursor == NSCursor.ResizeUpCursor || cursor == NSCursor.ResizeDownCursor || cursor == NSCursor.ResizeUpDownCursor)
-					base.MouseDragged(theEvent);
-			}
-
-			public override void MouseUp(NSEvent theEvent)
-			{
-				var cursor = NSCursor.CurrentCursor;
-				if (cursor == NSCursor.ResizeLeftCursor || cursor == NSCursor.ResizeRightCursor || cursor == NSCursor.ResizeLeftRightCursor
-				    || cursor == NSCursor.ResizeUpCursor || cursor == NSCursor.ResizeDownCursor || cursor == NSCursor.ResizeUpDownCursor)
-					base.MouseUp(theEvent);
+				Handler?.StartChange();
+				base.MouseDown(theEvent);
+				Handler?.TriggerChangeCompleted();
 			}
 
 			public override void Layout()
 			{
-				base.Layout();
-				Handler?.UpdatePosition();
+				if (MacView.NewLayout)
+					base.Layout();
+				Handler?.PerformLayout();
+				if (!MacView.NewLayout)
+					base.Layout();
+			}
+
+			public override bool AcceptsFirstMouse(NSEvent theEvent)
+			{
+				return Handler != null ? Handler.OnAcceptsFirstMouse(theEvent) : base.AcceptsFirstMouse(theEvent);
+			}
+		}
+		
+		bool changeStarted;
+
+		private void TriggerChangeStarted()
+		{
+			if (!changeStarted)
+			{
+				changeStarted = true;
+				Callback.OnPositionChangeStarted(Widget, EventArgs.Empty);
 			}
 		}
 
+		private void TriggerChangeCompleted()
+		{
+			if (changeStarted)
+			{
+				changeStarted = false;
+				Callback.OnPositionChangeCompleted(Widget, EventArgs.Empty);
+			}
+		}
+
+		private void StartChange()
+		{
+			changeStarted = false;
+		}
+
+		private void PerformLayout()
+		{
+			if (!initialPositionSet && Widget.Loaded)
+			{
+				SetInitialSplitPosition();
+				UpdatePosition();
+				initialPositionSet = true;
+			}
+		}
 
 		protected override NSSplitView CreateControl() => new EtoSplitView(this);
 
@@ -431,8 +449,9 @@ namespace Eto.Mac.Forms.Controls
 			{
 				if (panel1 != value)
 				{
-					var view = value.GetContainerView();
-					Control.ReplaceSubviewWith(Control.Subviews[0], view ?? new NSView());
+					var view = value.GetContainerView() ?? new NSView();
+					view.AutoresizingMask = NSViewResizingMask.WidthSizable | NSViewResizingMask.HeightSizable;
+					Control.ReplaceSubviewWith(Control.Subviews[0], view);
 					panel1 = value;
 					if (Widget.Loaded)
 						UpdatePosition();
@@ -447,8 +466,9 @@ namespace Eto.Mac.Forms.Controls
 			{
 				if (panel2 != value)
 				{
-					var view = value.GetContainerView();
-					Control.ReplaceSubviewWith(Control.Subviews[1], view ?? new NSView());
+					var view = value.GetContainerView() ?? new NSView();
+					view.AutoresizingMask = NSViewResizingMask.WidthSizable | NSViewResizingMask.HeightSizable;
+					Control.ReplaceSubviewWith(Control.Subviews[1], view);
 					panel2 = value;
 					if (Widget.Loaded)
 						UpdatePosition();
@@ -488,11 +508,11 @@ namespace Eto.Mac.Forms.Controls
 				{
 					case SplitterFixedPanel.None:
 					case SplitterFixedPanel.Panel1:
-						var size1 = panel1.GetPreferredSize(SizeF.PositiveInfinity);
+						var size1 = panel1?.GetPreferredSize(SizeF.PositiveInfinity) ?? SizeF.Empty;
 						position = (int)(Orientation == Orientation.Horizontal ? size1.Width : size1.Height);
 						break;
 					case SplitterFixedPanel.Panel2:
-						var size2 = panel2.GetPreferredSize(SizeF.PositiveInfinity);
+						var size2 = panel2?.GetPreferredSize(SizeF.PositiveInfinity) ?? SizeF.Empty;
 						if (Orientation == Orientation.Horizontal)
 							position = (int)(Control.Frame.Width - size2.Width - Control.DividerThickness);
 						else
@@ -500,9 +520,12 @@ namespace Eto.Mac.Forms.Controls
 						break;
 				}
 			}
-			else if (PreferredSize != null)
+			else
 			{
-				var preferredSize = Orientation == Orientation.Horizontal ? PreferredSize.Value.Width : PreferredSize.Value.Height;
+				var preferredSize = Orientation == Orientation.Horizontal ? UserPreferredSize.Width : UserPreferredSize.Height;
+				if (preferredSize == -1)
+					return;
+
 				var size = Orientation == Orientation.Horizontal ? Size.Width : Size.Height;
 				switch (fixedPanel)
 				{
@@ -521,9 +544,6 @@ namespace Eto.Mac.Forms.Controls
 		{
 			base.OnLoadComplete(e);
 			WasLoaded = false;
-			SetInitialSplitPosition();
-			UpdatePosition();
-			initialPositionSet = true;
 		}
 
 		public override void OnUnLoad(EventArgs e)
@@ -540,8 +560,8 @@ namespace Eto.Mac.Forms.Controls
 		{
 			var size = new SizeF();
 
-			var size1 = panel1.GetPreferredSize(availableSize);
-			var size2 = panel2.GetPreferredSize(availableSize);
+			var size1 = panel1?.GetPreferredSize(availableSize) ?? SizeF.Empty;
+			var size2 = panel2?.GetPreferredSize(availableSize) ?? SizeF.Empty;
 			if (Control.IsVertical)
 			{
 				if (!double.IsNaN(relative))
@@ -555,8 +575,17 @@ namespace Eto.Mac.Forms.Controls
 							size2.Width = (float)Math.Round(relative);
 							break;
 						case SplitterFixedPanel.None:
-							size1.Width = (float)Math.Round(Math.Max(size1.Width/relative, size2.Width/(1-relative)));
-							size2.Width = 0;
+							// ensure it's in range.
+							relative = Math.Max(0, Math.Min(1, relative));
+							if (relative >= 1)
+								size2.Height = 0;
+							else if (relative > 0)
+							{
+								size1.Width = (float)Math.Round(Math.Max(size1.Width/relative, size2.Width/(1-relative)));
+								size2.Width = 0;
+							}
+							else
+								size1.Width = 0;
 							break;
 						default:
 							throw new ArgumentOutOfRangeException();
@@ -593,8 +622,17 @@ namespace Eto.Mac.Forms.Controls
 							size2.Height = (float)Math.Round(relative);
 							break;
 						case SplitterFixedPanel.None:
-							size1.Height = (float)Math.Round(Math.Max(size1.Height/relative, size2.Height/(1-relative)));
-							size2.Height = 0;
+							// ensure it's in range.
+							relative = Math.Max(0, Math.Min(1, relative));
+							if (relative >= 1)
+								size2.Height = 0;
+							else if (relative > 0)
+							{
+								size1.Height = (float)Math.Round(Math.Max(size1.Height/relative, size2.Height/(1-relative)));
+								size2.Height = 0;
+							}
+							else
+								size1.Height = 0;
 							break;
 						default:
 							throw new ArgumentOutOfRangeException();
@@ -625,6 +663,7 @@ namespace Eto.Mac.Forms.Controls
 		{
 			base.InvalidateMeasure();
 			Control.NeedsLayout = true;
+			UpdatePosition();
 		}
 
 		void UpdatePosition()

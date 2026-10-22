@@ -1,4 +1,18 @@
 {
     "editor.insertSpaces": false,
-    "editor.detectIndentation": false
+	"editor.detectIndentation": false,
+	"files.exclude": {
+		"**/.vs": true,
+		"**/*.user": true
+	},
+	"var": {
+		"configuration" : "Debug",
+		"buildProperties" : "/v:Minimal /p:GenerateFullPaths=True /consoleloggerparameters:'ForceNoAlign;NoSummary'"
+	},
+	"vssolution.altSolutionFolders": [
+		"src",
+		"samples"
+	],
+	"dotnet.defaultSolution": "src/Eto.slnx"
+
 }

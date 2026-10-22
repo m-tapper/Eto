@@ -1,29 +1,47 @@
-using System;
-using Eto.Drawing;
-using Eto.Forms;
-using Eto.IO;
 using Eto.GtkSharp.Drawing;
 using Eto.GtkSharp.Forms.Cells;
 using Eto.GtkSharp.Forms.Controls;
 using Eto.GtkSharp.Forms.Printing;
 using Eto.GtkSharp.Forms;
-using Eto.GtkSharp.IO;
 using Eto.Forms.ThemedControls;
 using Eto.GtkSharp.Forms.Menu;
 using Eto.GtkSharp.Forms.ToolBar;
 using Eto.Shared.Forms;
-
 namespace Eto.GtkSharp
 {
 	static class Helper
 	{
 		public static bool UseHeaderBar;
 
+		// Whether GTK is running on its Wayland GDK backend (vs X11/XWayland). Honors GDK_BACKEND (a
+		// comma-separated priority list) which can force X11 under a Wayland session; otherwise a set
+		// WAYLAND_DISPLAY indicates Wayland. Fixed for the process. NOTE: this is deliberately distinct from
+		// WaylandClipboard's probe, which asks whether a Wayland *compositor* is reachable for wl_data_control
+		// (independent of the backend GTK chose); here we care specifically about GTK's active backend.
+		public static readonly bool IsWaylandBackend = DetectWaylandBackend();
+
+		static bool DetectWaylandBackend()
+		{
+			var backend = Environment.GetEnvironmentVariable("GDK_BACKEND");
+			if (!string.IsNullOrWhiteSpace(backend))
+				return backend.Split(',')[0].Trim().Equals("wayland", StringComparison.OrdinalIgnoreCase);
+			return !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY"));
+		}
+
 		public static void Init()
 		{
 			var args = new string[0];
 			if (Gtk.Application.InitCheck(string.Empty, ref args))
 				Gdk.Threads.Enter();
+
+			// Wayland and X11 match windows to the installed .desktop file by these.
+			// Set after init, which replaces the program name with the process name.
+			var appId = Assembly.GetEntryAssembly()?.GetCustomAttributes<AssemblyMetadataAttribute>().FirstOrDefault(r => r.Key == "Eto.LinuxAppId")?.Value;
+			if (!string.IsNullOrEmpty(appId))
+			{
+				GLib.Global.ProgramName = appId;
+				Gdk.Global.ProgramClass = appId;
+			}
 		}
 	}
 
@@ -57,7 +75,7 @@ namespace Eto.GtkSharp
 		public override string ID => "Gtk3";
 #endif
 
-		public override PlatformFeatures SupportedFeatures => PlatformFeatures.DrawableWithTransparentContent;
+		public override PlatformFeatures SupportedFeatures => PlatformFeatures.DrawableWithTransparentContent | PlatformFeatures.Mnemonics;
 
 #endif
 		public Platform()
@@ -70,11 +88,38 @@ namespace Eto.GtkSharp
 			AddTo(this);
 		}
 
+#if GTK3
+		static Platform()
+		{
+			Style.Add<ThemedStepperHandler>(null, h =>
+			{
+				h.Orientation = Orientation.Horizontal;
+				h.Widget.Size = new Size(-1, -1);
+				h.Font = SystemFonts.Default();
+				if (h.Control.Content.Handler is TableLayoutHandler table)
+				{
+					table.Control.StyleContext.AddClass("linked");
+				}
+			});
+
+			Style.Add<ThemedSegmentedButtonHandler>(null, h =>
+			{
+				// show segmented buttons linked together
+				h.Control.Styles.Add<TableLayout>("buttons", table =>
+				{
+					var tableHandler = table.Handler as TableLayoutHandler;
+					tableHandler?.Control.StyleContext.AddClass("linked");
+				});
+			});
+		}
+#endif
+
 		public static void AddTo(Eto.Platform p)
 		{
 			// Drawing
 			p.Add<Bitmap.IHandler>(() => new BitmapHandler());
 			p.Add<FontFamily.IHandler>(() => new FontFamilyHandler());
+			p.Add<FontTypeface.IHandler>(() => new FontTypefaceHandler());
 			p.Add<Font.IHandler>(() => new FontHandler());
 			p.Add<Fonts.IHandler>(() => new FontsHandler());
 			p.Add<Graphics.IHandler>(() => new GraphicsHandler());
@@ -89,6 +134,13 @@ namespace Eto.GtkSharp
 			p.Add<LinearGradientBrush.IHandler>(() => new LinearGradientBrushHandler());
 			p.Add<RadialGradientBrush.IHandler>(() => new RadialGradientBrushHandler());
 			p.Add<SystemColors.IHandler>(() => new SystemColorsHandler());
+			p.Add<FormattedText.IHandler>(() => new FormattedTextHandler());
+#if GTKCORE
+			p.Add<MagnificationGesture.IHandler>(() => new MagnificationGestureHandler());
+			p.Add<RotationGesture.IHandler>(() => new RotationGestureHandler());
+			p.Add<PanGesture.IHandler>(() => new PanGestureHandler());
+			p.Add<ScrollGesture.IHandler>(() => new ScrollGestureHandler());
+#endif
 
 			// Forms.Cells
 			p.Add<CheckBoxCell.IHandler>(() => new CheckBoxCellHandler());
@@ -142,6 +194,12 @@ namespace Eto.GtkSharp
 			p.Add<RichTextArea.IHandler>(() => new RichTextAreaHandler());
 			p.Add<Stepper.IHandler>(() => new ThemedStepperHandler());
 			p.Add<TextStepper.IHandler>(() => new TextStepperHandler());
+			p.Add<ButtonSegmentedItem.IHandler>(() => new ThemedButtonSegmentedItemHandler());
+			p.Add<MenuSegmentedItem.IHandler>(() => new ThemedMenuSegmentedItemHandler());
+			p.Add<SegmentedButton.IHandler>(() => new ThemedSegmentedButtonHandler());
+			p.Add<ToggleButton.IHandler>(() => new ToggleButtonHandler());
+			p.Add<PropertyGrid.IHandler>(() => new ThemedPropertyGridHandler());
+			p.Add<CollectionEditor.IHandler>(() => new ThemedCollectionEditorHandler());
 
 			// Forms.Menu
 			p.Add<CheckMenuItem.IHandler>(() => new CheckMenuItemHandler());
@@ -150,9 +208,11 @@ namespace Eto.GtkSharp
 			p.Add<MenuBar.IHandler>(() => new MenuBarHandler());
 			p.Add<RadioMenuItem.IHandler>(() => new RadioMenuItemHandler());
 			p.Add<SeparatorMenuItem.IHandler>(() => new SeparatorMenuItemHandler());
+			p.Add<SubMenuItem.IHandler>(() => new SubMenuItemHandler());
 			
 			// Forms.Printing
 			p.Add<PrintDialog.IHandler>(() => new PrintDialogHandler());
+			p.Add<PrintPreviewDialog.IHandler>(() => new PrintPreviewDialogHandler());
 			p.Add<PrintDocument.IHandler>(() => new PrintDocumentHandler());
 			p.Add<PrintSettings.IHandler>(() => new PrintSettingsHandler());
 			
@@ -161,16 +221,23 @@ namespace Eto.GtkSharp
 			p.Add<RadioToolItem.IHandler>(() => new RadioToolItemHandler());
 			p.Add<SeparatorToolItem.IHandler>(() => new SeparatorToolItemHandler());
 			p.Add<ButtonToolItem.IHandler>(() => new ButtonToolItemHandler());
+			p.Add<DropDownToolItem.IHandler>(() => new DropDownToolItemHandler());
 			p.Add<ToolBar.IHandler>(() => new ToolBarHandler());
 
 			// Forms
 			p.Add<AboutDialog.IHandler>(() => new AboutDialogHandler());
 			p.Add<Application.IHandler>(() => new ApplicationHandler());
+#if NET6_0_OR_GREATER
+			p.Add<Clipboard.IHandler>(() => WaylandClipboard.IsAvailable
+				? (Clipboard.IHandler)new WaylandClipboardHandler()
+				: new ClipboardHandler());
+#else
 			p.Add<Clipboard.IHandler>(() => new ClipboardHandler());
-			p.Add<ColorDialog.IHandler>(() => new ColorDialogHandler());
+#endif
 			p.Add<Cursor.IHandler>(() => new CursorHandler());
 			p.Add<Dialog.IHandler>(() => new DialogHandler());
 			p.Add<Form.IHandler>(() => new FormHandler());
+			p.Add<FloatingForm.IHandler>(() => new FloatingFormHandler());
 			p.Add<MessageBox.IHandler>(() => new MessageBoxHandler());
 			p.Add<OpenFileDialog.IHandler>(() => new OpenFileDialogHandler());
 			p.Add<ColorDialog.IHandler>(() => new ColorDialogHandler());
@@ -185,12 +252,17 @@ namespace Eto.GtkSharp
 			p.Add<Keyboard.IHandler>(() => new KeyboardHandler());
 			p.Add<FixedMaskedTextProvider.IHandler>(() => new FixedMaskedTextProviderHandler());
 			p.Add<DataObject.IHandler>(() => new DataObjectHandler());
+			p.Add<DataFormats.IHandler>(() => new DataFormatsHandler());
+			p.Add<Window.IWindowHandler>(() => new WindowHandler());
+			p.Add<NativeControlHost.IHandler>(() => new NativeControlHandler());
 			if (EtoEnvironment.Platform.IsLinux)
+			{
 				p.Add<TrayIndicator.IHandler>(() => new LinuxTrayIndicatorHandler());
+				p.Add<Notification.IHandler>(() => new LinuxNotificationHandler());
+				p.Add<Taskbar.IHandler>(() => new UnityTaskbarHandler());
+			}
             else
                 p.Add<TrayIndicator.IHandler>(() => new OtherTrayIndicatorHandler());
-			if (EtoEnvironment.Platform.IsLinux)
-				p.Add<Notification.IHandler>(() => new LinuxNotificationHandler());
 
 			// IO
 			p.Add<SystemIcons.IHandler>(() => new SystemIconsHandler());
@@ -203,9 +275,10 @@ namespace Eto.GtkSharp
 			p.Add<Spinner.IHandler>(() => new SpinnerHandler());
 			p.Add<OpenWithDialog.IHandler>(() => new OpenWithDialogHandler());
 			#else
-			p.Add<ColorDialog.IHandler>(() => new ColorDialogHandler());
 			p.Add<Spinner.IHandler>(() => new ThemedSpinnerHandler());
 			#endif
+
+			p.Add<Themes.IHandler>(() => new ThemesHandler());
 		}
 	}
 }

@@ -1,13 +1,9 @@
-﻿using System;
 using NUnit.Framework;
-using Eto.Forms;
-using System.Linq;
-using Eto.Drawing;
-
+using System.Runtime.ExceptionServices;
 namespace Eto.Test.UnitTests.Forms.Controls
 {
 	[TestFixture]
-	public class TreeGridViewTests : TestBase
+	public class TreeGridViewTests : GridTests<TreeGridView>
 	{
 		[Test]
 		public void SelectedItemsShouldNotCrash()
@@ -19,8 +15,8 @@ namespace Eto.Test.UnitTests.Forms.Controls
 				tree.DataStore = new TreeGridItemCollection();
 
 				var items = tree.SelectedItems.ToList();
-				Assert.IsNotNull(items);
-				Assert.AreEqual(0, items.Count);
+				Assert.That(items, Is.Not.Null);
+				Assert.That(items.Count, Is.EqualTo(0));
 			});
 		}
 
@@ -101,5 +97,153 @@ namespace Eto.Test.UnitTests.Forms.Controls
 				e.Graphics.DrawRectangle(Colors.Green, rect);
 			}
 		}
+
+		[Test, InvokeOnUI]
+		public void NullDataStoreShouldNotCrash()
+		{
+			var control = new TreeGridView();
+			control.DataStore = null; // when binding, this will be done so it should not crash!
+		}
+
+		[TestCase(true, true)]
+		[TestCase(true, false)]
+		[TestCase(false, true)]
+		[TestCase(false, false)]
+		public void ClickingWithEmptyDataShouldNotCrash(bool allowEmptySelection, bool allowMultipleSelection)
+		{
+			Exception exception = null;
+			Form(form =>
+			{
+				var dd = new TreeGridItemCollection();
+
+				dd.Add(new TreeGridItem { Values = new[] { "Hello" } });
+				var control = new TreeGridView();
+				control.AllowEmptySelection = allowEmptySelection;
+				control.AllowMultipleSelection = allowMultipleSelection;
+				control.Columns.Add(new GridColumn
+				{
+					DataCell = new TextBoxCell(0),
+					Width = 100,
+					HeaderText = "Text Cell"
+				});
+				control.DataStore = dd;
+				Application.Instance.AsyncInvoke(() => {
+					// can crash when had selection initially but no selection after.
+					try
+					{
+						control.DataStore = new TreeGridItemCollection();
+					}
+					catch (Exception ex)
+					{
+						exception = ex;
+					}
+				Application.Instance.AsyncInvoke(form.Close);
+				});
+
+				form.Content = control;
+			});
+
+			if (exception != null)
+				ExceptionDispatchInfo.Capture(exception).Throw();
+
+		}
+
+		[TestCase(2)]
+		[TestCase(3)] // child of the expanded item at row 2
+		public void ReloadDataShouldKeepSelection(int row)
+		{
+			TreeGridView tree = null;
+			var items = new TreeGridItemCollection();
+			for (int i = 0; i < 5; i++)
+				items.Add(new TreeGridItem { Values = new[] { "Item " + i } });
+			var parent = (TreeGridItem)items[2];
+			parent.Expanded = true;
+			parent.Children.Add(new TreeGridItem { Values = new[] { "Child" } });
+
+			int[] selectedAfter = null;
+			object selectedItemAfter = null;
+			object selectedItemBefore = null;
+			// [0] = raised while selecting, [1] = raised during ReloadData
+			var selectionChanged = new int[2];
+			var selectedRowsChanged = new int[2];
+			var selectedItemsChanged = new int[2];
+			var selectedItemChanged = new int[2];
+			var phase = 0;
+			Shown(form =>
+			{
+				tree = new TreeGridView { Size = new Size(200, 400) };
+				tree.Columns.Add(new GridColumn { HeaderText = "Column 1", DataCell = new TextBoxCell(0) });
+				tree.DataStore = items;
+				tree.SelectionChanged += (sender, e) => selectionChanged[phase]++;
+				tree.SelectedRowsChanged += (sender, e) => selectedRowsChanged[phase]++;
+				tree.SelectedItemsChanged += (sender, e) => selectedItemsChanged[phase]++;
+				tree.SelectedItemChanged += (sender, e) => selectedItemChanged[phase]++;
+				form.Content = tree;
+			}, () =>
+			{
+				tree.SelectedRow = row;
+				selectedItemBefore = tree.SelectedItem;
+				phase = 1;
+				tree.ReloadData();
+				selectedAfter = tree.SelectedRows.ToArray();
+				selectedItemAfter = tree.SelectedItem;
+			});
+
+			Assert.That(selectedAfter, Is.EqualTo(new[] { row }), "Selection should be kept after ReloadData");
+			Assert.That(selectedItemAfter, Is.SameAs(selectedItemBefore), "SelectedItem should be kept after ReloadData");
+
+			Assert.Multiple(() =>
+			{
+				Assert.That(selectionChanged[0], Is.EqualTo(1), "SelectionChanged should be raised once when selecting a row");
+				Assert.That(selectedRowsChanged[0], Is.EqualTo(1), "SelectedRowsChanged should be raised once when selecting a row");
+				Assert.That(selectedItemsChanged[0], Is.EqualTo(1), "SelectedItemsChanged should be raised once when selecting a row");
+				Assert.That(selectedItemChanged[0], Is.EqualTo(1), "SelectedItemChanged should be raised once when selecting a row");
+
+				Assert.That(selectionChanged[1], Is.EqualTo(0), "SelectionChanged should not be raised when ReloadData keeps the selection");
+				Assert.That(selectedRowsChanged[1], Is.EqualTo(0), "SelectedRowsChanged should not be raised when ReloadData keeps the selection");
+				Assert.That(selectedItemsChanged[1], Is.EqualTo(0), "SelectedItemsChanged should not be raised when ReloadData keeps the selection");
+				Assert.That(selectedItemChanged[1], Is.EqualTo(0), "SelectedItemChanged should not be raised when ReloadData keeps the selection");
+			});
+		}
+
+		protected override void SetDataStore(TreeGridView grid, IEnumerable<object> dataStore)
+		{
+			grid.DataStore = (ITreeGridStore<ITreeGridItem>)dataStore;
+		}
+
+		[Test, CancelAfter(10000)]
+		public void AddingMultipleItemsShouldNotCrash(CancellationToken token) => Async(10000, async () =>
+		{
+			var tree = new TreeGridView { Size = new Size(200, 400) };
+			
+			tree.Columns.Add(new GridColumn { HeaderText = "Column 1", DataCell = new TextBoxCell(0) });
+			var items = new TreeGridItemCollection
+			{
+				// important to have a row first so it can get row/column focus
+				new TreeGridItem { Values = new[] { "Item" } }
+			};
+			
+			tree.DataStore = items;
+			
+			var form = new Form { Content = tree };
+			form.Shown += (sender, e) => tree.Focus();
+			form.Show();
+			
+			for (int i = 0; i < 1000; i++)
+			{
+				if (token.IsCancellationRequested)
+					break;
+				items.Clear();
+				for (int j = 0; j < i; j++)
+				{
+					items.Add(new TreeGridItem { Values = new[] { "Item " + j } });
+				}
+				tree.DataStore = items;
+			}
+			// let any pending reload from the loop above finish before tearing the form down
+			await Task.Delay(100);
+			form.Close();
+
+		});
 	}
 }

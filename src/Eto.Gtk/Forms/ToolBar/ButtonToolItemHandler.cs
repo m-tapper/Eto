@@ -1,6 +1,3 @@
-using System;
-using Eto.Forms;
-
 namespace Eto.GtkSharp.Forms.ToolBar
 {
 
@@ -20,9 +17,11 @@ namespace Eto.GtkSharp.Forms.ToolBar
 			Control.IsImportant = true;
 			Control.Sensitive = Enabled;
 			Control.TooltipText = this.ToolTip;
+			Control.ShowAll();
+			Control.NoShowAll = true;
+			Control.Visible = Visible;
 			//control.CanFocus = false;			// why is this disabled and not true???
 			tb.Insert(Control, index);
-			if (tb.Visible) Control.ShowAll();
 			Control.Clicked += Connector.HandleClicked;
 		}
 
@@ -39,7 +38,7 @@ namespace Eto.GtkSharp.Forms.ToolBar
 
 			public void HandleClicked(object sender, EventArgs e)
 			{
-				Handler.Widget.OnClick(e);
+				Handler?.Widget.OnClick(e);
 			}
 		}
 	}

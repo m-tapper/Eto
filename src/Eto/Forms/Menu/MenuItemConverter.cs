@@ -1,27 +1,22 @@
-﻿using System;
-using System.ComponentModel;
+﻿namespace Eto.Forms;
 
-namespace Eto.Forms
+class MenuItemConverter : sc.TypeConverter
 {
-	class MenuItemConverter : TypeConverter
+	public override bool CanConvertFrom(sc.ITypeDescriptorContext context, Type sourceType)
 	{
-		public override bool CanConvertFrom(ITypeDescriptorContext context, Type sourceType)
-		{
-			return typeof(Command).IsAssignableFrom(sourceType) || base.CanConvertFrom(context, sourceType);
-		}
+		return typeof(Command).IsAssignableFrom(sourceType);
+	}
 
-		public override bool CanConvertTo(ITypeDescriptorContext context, Type destinationType)
-		{
-			return false;
-		}
+	public override bool CanConvertTo(sc.ITypeDescriptorContext context, Type destinationType)
+	{
+		return false;
+	}
 
-		public override object ConvertFrom(ITypeDescriptorContext context, System.Globalization.CultureInfo culture, object value)
-		{
-			var command = value as Command;
-			if (command != null)
-				return command.CreateMenuItem();
-			return base.ConvertFrom(context, culture, value);
-		}
+	public override object ConvertFrom(sc.ITypeDescriptorContext context, System.Globalization.CultureInfo culture, object value)
+	{
+		var command = value as Command;
+		if (command != null)
+			return command.CreateMenuItem();
+		return base.ConvertFrom(context, culture, value);
 	}
 }
-

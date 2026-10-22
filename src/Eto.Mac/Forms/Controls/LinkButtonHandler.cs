@@ -1,37 +1,4 @@
-using System;
-using Eto.Drawing;
-using Eto.Forms;
 using Eto.Mac.Drawing;
-using System.Runtime.InteropServices;
-
-#if XAMMAC2
-using AppKit;
-using Foundation;
-using CoreGraphics;
-using ObjCRuntime;
-using CoreAnimation;
-#else
-using MonoMac.AppKit;
-using MonoMac.Foundation;
-using MonoMac.CoreGraphics;
-using MonoMac.ObjCRuntime;
-using MonoMac.CoreAnimation;
-#if Mac64
-using nfloat = System.Double;
-using nint = System.Int64;
-using nuint = System.UInt64;
-#else
-using nfloat = System.Single;
-using nint = System.Int32;
-using nuint = System.UInt32;
-#endif
-#if SDCOMPAT
-using CGSize = System.Drawing.SizeF;
-using CGRect = System.Drawing.RectangleF;
-using CGPoint = System.Drawing.PointF;
-#endif
-#endif
-
 namespace Eto.Mac.Forms.Controls
 {
 	/// <summary>
@@ -89,7 +56,7 @@ namespace Eto.Mac.Forms.Controls
 		{
 			base.Initialize();
 
-			TextColor = NSColor.Blue.ToEto();
+			TextColor = SystemColors.LinkText;
 			Cursor = Cursors.Pointer;
 			Widget.MouseEnter += HandleMouseEnter;
 			Widget.MouseLeave += HandleMouseLeave;
@@ -145,14 +112,7 @@ namespace Eto.Mac.Forms.Controls
 			switch (id)
 			{
 				case LinkButton.ClickEvent:
-					Widget.MouseDown += (sender, e) =>
-					{
-						if (Enabled && e.Buttons == MouseButtons.Primary)
-						{
-							Callback.OnClick(Widget, EventArgs.Empty);
-							e.Handled = true;
-						}
-					};
+					HandleEvent(LinkButton.MouseUpEvent);
 					break;
 				default:
 					base.AttachEvent(id);
@@ -160,11 +120,21 @@ namespace Eto.Mac.Forms.Controls
 			}
 		}
 
+		public override MouseEventArgs TriggerMouseUp(NSObject obj, IntPtr sel, NSEvent theEvent)
+		{
+			var args = base.TriggerMouseUp(obj, sel, theEvent);
+			if (!args.Handled && Enabled && args.Buttons == MouseButtons.Primary)
+			{
+				Callback.OnClick(Widget, EventArgs.Empty);
+			}
+			return args;
+		}
+
 		static readonly object DisabledTextColorKey = new object();
 
 		public Color DisabledTextColor
 		{
-			get { return Widget.Properties.Get<Color?>(DisabledTextColorKey) ?? NSColor.DisabledControlText.ToEto(); }
+			get { return Widget.Properties.Get<Color?>(DisabledTextColorKey) ?? SystemColors.DisabledText; }
 			set
 			{
 				if (value != DisabledTextColor)

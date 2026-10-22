@@ -1,39 +1,23 @@
-using System;
-using swc = System.Windows.Controls;
-using sw = System.Windows;
 using swd = System.Windows.Data;
-using swa = System.Windows.Automation;
-using swm = System.Windows.Media;
-using Eto.Forms;
-using System.Collections;
-using System.Collections.Generic;
-using Eto.Drawing;
-
+using Eto.Wpf.Drawing;
 namespace Eto.Wpf.Forms.Controls
 {
+	
 	public class DropDownHandler : DropDownHandler<EtoComboBox, DropDown, DropDown.ICallback>
 	{
+		internal static readonly object AllowVirtualization_Key = new object();
+		internal static readonly object VirtualizationThreshold_Key = new object();
 	}
 
 	public class EtoComboBox : swc.ComboBox, IEtoWpfControl
 	{
-		int? selected;
-
-		public EtoComboBox()
+		public bool IsVirtualizing
 		{
-			Loaded += ComboBoxEx_Loaded;
+			get => swc.VirtualizingPanel.GetIsVirtualizing(this);
+			set => swc.VirtualizingPanel.SetIsVirtualizing(this, value);
 		}
 
-		public override void OnApplyTemplate()
-		{
-			base.OnApplyTemplate();
-
-			if (!IsLoaded)
-			{
-				selected = SelectedIndex;
-				SelectedIndex = -1;
-			}
-		}
+		public swc.Primitives.Popup Popup => GetTemplateChild("PART_Popup") as swc.Primitives.Popup;
 
 		public swc.ScrollViewer ContentHost
 		{
@@ -46,18 +30,9 @@ namespace Eto.Wpf.Forms.Controls
 			}
 		}
 
-		public swc.TextBox TextBox
-		{
-			get { return GetTemplateChild("PART_EditableTextBox") as swc.TextBox; }
-		}
+		public swc.TextBox TextBox => GetTemplateChild("PART_EditableTextBox") as swc.TextBox;
 
 		public IWpfFrameworkElement Handler { get; set; }
-
-		protected override void OnSelectionChanged(swc.SelectionChangedEventArgs e)
-		{
-			if (selected == null)
-				base.OnSelectionChanged(e);
-		}
 
 		protected override void OnItemsChanged(System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
 		{
@@ -68,43 +43,59 @@ namespace Eto.Wpf.Forms.Controls
 			}
 		}
 
-		void ComboBoxEx_Loaded(object sender, sw.RoutedEventArgs e)
+		public double? FindMaxWidth()
 		{
-			if (selected == null) return;
-			SelectedIndex = selected.Value;
-			selected = null;
-		}
-
-		sw.Size FindMaxSize(sw.Size constraint)
-		{
-			var size = base.MeasureOverride(constraint);
 			var popup = GetTemplateChild("PART_Popup") as swc.Primitives.Popup;
 			if (popup == null)
-				return size;
-			popup.Child.Measure(WpfConversions.PositiveInfinitySize); // force generating containers
-			if (ItemContainerGenerator.Status != swc.Primitives.GeneratorStatus.ContainersGenerated)
-				return size;
-			double maxWidth = 0;
-			foreach (var item in Items)
+				return null;
+
+			try
 			{
+				popup.Child.Measure(WpfConversions.PositiveInfinitySize); // force generating containers
+			}
+			catch (Exception ex)
+			{
+				// SafeLayout already keeps an item that can't be laid out from being fatal, so this is
+				// only reached when something else in the popup fails. Carry on with whatever containers
+				// were generated - sizing to the items that do work beats giving up on a width entirely.
+				Trace.WriteLine($"Could not measure drop down items: {ex}");
+			}
+
+			if (ItemContainerGenerator.Status != swc.Primitives.GeneratorStatus.ContainersGenerated)
+				return null;
+
+			var count = Items.Count;
+			if (count == 0)
+				return null;
+
+			double maxWidth = 0;
+			for (int i = 0; i < count; i++)
+			{
+				var item = Items[i];
 				var comboBoxItem = (swc.ComboBoxItem)ItemContainerGenerator.ContainerFromItem(item);
 				if (comboBoxItem == null)
 					continue;
-				comboBoxItem.Measure(WpfConversions.PositiveInfinitySize);
+				try
+				{
+					comboBoxItem.Measure(WpfConversions.PositiveInfinitySize);
+				}
+				catch (Exception ex)
+				{
+					// as above - skip this item, but keep sizing to the ones that do work
+					Trace.WriteLine($"Could not measure drop down item '{item}': {ex}");
+					continue;
+				}
 				maxWidth = Math.Max(maxWidth, comboBoxItem.DesiredSize.Width);
 			}
 
 			var toggle = GetTemplateChild("toggleButton") as sw.UIElement;
-			maxWidth += toggle != null ? toggle.DesiredSize.Width : 20;
-			size.Width = Math.Max(maxWidth, size.Width);
-			if (!double.IsNaN(constraint.Width))
-				size.Width = Math.Min(size.Width, constraint.Width);
-			return size;
+			maxWidth += toggle?.DesiredSize.Width ?? 20;
+			return maxWidth;
 		}
 
 		protected override sw.Size MeasureOverride(sw.Size constraint)
 		{
-			return Handler?.MeasureOverride(constraint, FindMaxSize) ?? FindMaxSize(constraint);
+			return Handler?.MeasureOverride(constraint, base.MeasureOverride) ?? base.MeasureOverride(constraint);
 		}
 	}
 
@@ -115,12 +106,18 @@ namespace Eto.Wpf.Forms.Controls
 		where TCallback: DropDown.ICallback
 	{
 		IEnumerable<object> store;
+		WeakEventListener storeListener;
 
 		public DropDownHandler()
 		{
 			Control = (TControl)new EtoComboBox();
 			Control.Handler = this;
 			Control.SelectionChanged += (sender, e) => Callback.OnSelectedIndexChanged(Widget, EventArgs.Empty);
+		}
+
+		protected override void Initialize()
+		{
+			base.Initialize();
 			CreateTemplate();
 		}
 
@@ -128,14 +125,54 @@ namespace Eto.Wpf.Forms.Controls
 
 		public override bool UseKeyPreview { get { return true; } }
 
+		/// <summary>
+		/// Gets or sets a valuie indication virtualation will be automatically enabled/disabled based on <see cref="VirtualizationThreshold" />.
+		/// </summary>
+		public bool AllowVirtualization
+		{
+			get => Widget.Properties.Get<bool>(DropDownHandler.AllowVirtualization_Key, true);
+			set
+			{
+				if (Widget.Properties.TrySet(DropDownHandler.AllowVirtualization_Key, value, true))
+					SetVirtualization();
+			}
+		}
+
+		/// <summary>
+		/// Gets or sets the minimum number of items before virtualization is enabled.
+		/// </summary>
+		/// <value>Threshold of items required when virtualization is enabled</value>
+		public int VirtualizationThreshold
+		{
+			get => Widget.Properties.Get<int>(DropDownHandler.VirtualizationThreshold_Key, 200);
+			set
+			{
+				if (Widget.Properties.TrySet(DropDownHandler.VirtualizationThreshold_Key, value, 200))
+				{
+					SetVirtualization();
+				}
+			}
+		}
 
 		public IEnumerable<object> DataStore
 		{
 			get { return store; }
 			set
 			{
+				storeListener?.Detach();
+				storeListener = null;
+
 				var oldSelectedIndex = SelectedIndex;
 				store = value;
+
+				// only hold this handler weakly, so a long lived data store doesn't keep the control alive
+				if (store is INotifyCollectionChanged notifyChanged)
+				{
+					storeListener = WeakEventListener.Create(notifyChanged, this, static (h, s, e) => h.Store_CollectionChanged(s, e));
+				}
+
+				SetVirtualization();
+
 				Control.ItemsSource = store;
 				// WPF only triggers a slection change when the item instance has changed
 				if (oldSelectedIndex != SelectedIndex && SelectedIndex >= 0)
@@ -143,10 +180,23 @@ namespace Eto.Wpf.Forms.Controls
 			}
 		}
 
+		private void Store_CollectionChanged(object sender, NotifyCollectionChangedEventArgs e)
+		{
+			if (AllowVirtualization)
+				SetVirtualization();
+			maxWidthCache = null;
+		}
+
+		private void SetVirtualization()
+		{
+			// Use virtualization for large lists
+			Control.IsVirtualizing = AllowVirtualization && store?.Count() >= VirtualizationThreshold;
+		}
+
 		public int SelectedIndex
 		{
-			get { return Control.SelectedIndex; }
-			set { Control.SelectedIndex = value; }
+			get => Control.SelectedIndex;
+			set => Control.SelectedIndex = value;
 		}
 
 		protected virtual swc.Border BorderControl => Control.FindChild<swc.Border>();
@@ -161,18 +211,18 @@ namespace Eto.Wpf.Forms.Controls
 			{
 				var border = BorderControl;
 				if (border != null)
-				{
 					border.Background = value.ToWpfBrush(border.Background);
-				}
+				else
+					PerformOnLoad(() => BackgroundColor = value);
 			}
 		}
-
+		
 		public override Color TextColor
 		{
 			get
 			{
 				var block = Control.FindChild<swc.TextBlock>();
-				return block != null ? block.Foreground.ToEtoColor() : base.TextColor;
+				return block?.Foreground.ToEtoColor() ?? base.TextColor;
 			}
 			set
 			{
@@ -180,16 +230,61 @@ namespace Eto.Wpf.Forms.Controls
 				if (block != null)
 					block.Foreground = value.ToWpfBrush();
 				else
-					base.TextColor = value;
+					PerformOnLoad(() => TextColor = value);
 			}
 		}
 
+		IIndirectBinding<string> _itemTextBinding;
+		public IIndirectBinding<string> ItemTextBinding
+		{
+			get => _itemTextBinding;
+			set
+			{
+				_itemTextBinding = value;
+				if (Widget.Loaded)
+					CreateTemplate();
+			}
+		}
+
+		public IIndirectBinding<string> ItemKeyBinding { get; set; }
+
 		void CreateTemplate()
 		{
-			Control.ItemTemplate = new sw.DataTemplate
+			maxWidthCache = null;
+			var textBlock = new WpfImageTextBindingBlock(() => Widget.ItemTextBinding, () => Widget.ItemImageBinding);
+			if (IsEventHandled(DropDown.FormatItemEvent))
 			{
-				VisualTree = new WpfImageTextBindingBlock(() => Widget.ItemTextBinding, () => Widget.ItemImageBinding, false)
-			};
+				var fontConverter = new WpfActionValueConverter(ConvertFontFamily);
+				textBlock.SetBinding(swc.TextBlock.FontFamilyProperty, new swd.Binding { Converter = fontConverter });
+				textBlock.SetBinding(swc.TextBlock.FontStretchProperty, new swd.Binding { Converter = fontConverter });
+				textBlock.SetBinding(swc.TextBlock.FontWeightProperty, new swd.Binding { Converter = fontConverter });
+				textBlock.SetBinding(swc.TextBlock.FontStyleProperty, new swd.Binding { Converter = fontConverter });
+				textBlock.SetBinding(swc.TextBlock.FontSizeProperty, new swd.Binding { Converter = fontConverter });
+			}
+
+			Control.ItemTemplate = new sw.DataTemplate { VisualTree = textBlock };
+		}
+
+		private object ConvertFontFamily(object value, Type targetType, object parameter, CultureInfo culture)
+		{
+			var args = new DropDownFormatEventArgs(value, 0, Font);
+			Callback.OnFormatItem(Widget, args);
+			if (args.Font is Font font && font.Handler is FontHandler fontHandler)
+			{
+				if (typeof(swm.FontFamily).IsAssignableFrom(targetType))
+					return fontHandler.WpfFamily;
+				else if (typeof(sw.FontStretch).IsAssignableFrom(targetType))
+					return fontHandler.WpfFontStretch;
+				else if (typeof(sw.FontWeight).IsAssignableFrom(targetType))
+					return fontHandler.WpfFontWeight;
+				else if (typeof(sw.FontStyle).IsAssignableFrom(targetType))
+					return fontHandler.WpfFontStyle;
+				else if (typeof(double).IsAssignableFrom(targetType))
+					return fontHandler.WpfSize;
+				else if (typeof(swm.Typeface).IsAssignableFrom(targetType))
+					return fontHandler.WpfTypeface;
+			}
+			return null;
 		}
 
 		public override void AttachEvent(string id)
@@ -202,10 +297,45 @@ namespace Eto.Wpf.Forms.Controls
 				case DropDown.DropDownClosedEvent:
 					Control.DropDownClosed += (sender, e) => Callback.OnDropDownClosed(Widget, EventArgs.Empty);
 					break;
+				case DropDown.FormatItemEvent:
+					CreateTemplate();
+					break;
 				default:
 					base.AttachEvent(id);
 					break;
 			}
 		}
+
+		double? maxWidthCache;
+
+		public override sw.Size MeasureOverride(sw.Size constraint, Func<sw.Size, sw.Size> measure)
+		{
+			// Don't calculate the max width if we have a specified width - it isn't going to be used.
+			// This matters a lot with many items (e.g. a font list): finding the max width has to realize
+			// and measure every item, which is both slow and at the mercy of anything that can go wrong
+			// measuring an item, such as a font WPF is unable to load. Specifying a width means all of
+			// that is deferred until the user actually opens the drop down.
+			if (!double.IsNaN(UserPreferredSize.Width))
+				return base.MeasureOverride(constraint, measure);
+
+			sw.Size MeasureMaxWidth(sw.Size constraint2)
+			{
+				var desired = measure(constraint2);
+
+				if (maxWidthCache == null)
+					maxWidthCache = Control.FindMaxWidth();
+
+				if (maxWidthCache != null)
+					desired.Width = Math.Max(desired.Width, maxWidthCache.Value);
+
+				if (!double.IsNaN(constraint2.Width))
+					desired.Width = Math.Min(constraint2.Width, desired.Width);
+
+				return desired;
+			}
+
+			return base.MeasureOverride(constraint, MeasureMaxWidth);
+		}
+
 	}
 }

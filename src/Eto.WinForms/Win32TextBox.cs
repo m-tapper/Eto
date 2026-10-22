@@ -1,16 +1,13 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.InteropServices;
 using System.Security;
-using System.Text;
 using System.Windows.Forms;
 
 namespace Eto.WinForms
 {
 	public static class Win32TextBox
 	{
+#pragma warning disable CS0618 // ComInterfaceType.InterfaceIsDual is obsolete: 'Support for IDispatch may be unavailable in future releases.'
 		[ComVisible(true), Guid("8CC497C0-A1DF-11ce-8098-00AA0047BE5D"), InterfaceType(ComInterfaceType.InterfaceIsDual), SuppressUnmanagedCodeSecurity]
+#pragma warning restore CS0618 // ComInterfaceType.InterfaceIsDual is obsolete: 'Support for IDispatch may be unavailable in future releases.'
 		public interface ITextDocument
 		{
 			string GetName();
@@ -36,7 +33,9 @@ namespace Eto.WinForms
 			ITextRange RangeFromPoint(int x, int y);
 		}
 
+#pragma warning disable CS0618 // ComInterfaceType.InterfaceIsDual is obsolete: 'Support for IDispatch may be unavailable in future releases.'
 		[ComVisible(true), Guid("8CC497C2-A1DF-11ce-8098-00AA0047BE5D"), InterfaceType(ComInterfaceType.InterfaceIsDual), SuppressUnmanagedCodeSecurity]
+#pragma warning restore CS0618 // ComInterfaceType.InterfaceIsDual is obsolete: 'Support for IDispatch may be unavailable in future releases.'
 		public interface ITextRange
 		{
 			string GetText();
@@ -117,7 +116,11 @@ namespace Eto.WinForms
 							var gUID = typeof(ITextDocument).GUID;
 							try
 							{
+#if NET7_0_OR_GREATER
+								Marshal.QueryInterface(iunkHandle, in gUID, out itextDocumentHandle);
+#else
 								Marshal.QueryInterface(iunkHandle, ref gUID, out itextDocumentHandle);
+#endif
 								var textDocument = Marshal.GetObjectForIUnknown(itextDocumentHandle) as ITextDocument;
 								if (textDocument != null)
 								{

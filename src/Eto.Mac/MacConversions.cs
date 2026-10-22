@@ -1,75 +1,95 @@
-using System;
-using Eto.Drawing;
-using Eto.Forms;
 using Eto.Mac.Forms;
 using Eto.Mac.Drawing;
 using Eto.Mac.Forms.Printing;
-using System.Linq;
 using Eto.Mac.Forms.Menu;
 
-#if XAMMAC2
-using AppKit;
-using Foundation;
-using CoreGraphics;
-using ObjCRuntime;
-using CoreAnimation;
-using CoreImage;
-using ImageIO;
-#else
-using MonoMac.AppKit;
-using MonoMac.Foundation;
-using MonoMac.CoreGraphics;
-using MonoMac.ObjCRuntime;
-using MonoMac.CoreAnimation;
-using MonoMac.CoreImage;
-using MonoMac.ImageIO;
-#if Mac64
-using nfloat = System.Double;
-using nint = System.Int64;
-using nuint = System.UInt64;
-#else
-using nfloat = System.Single;
-using nint = System.Int32;
-using nuint = System.UInt32;
-#endif
-#if SDCOMPAT
-using CGSize = System.Drawing.SizeF;
-using CGRect = System.Drawing.RectangleF;
-using CGPoint = System.Drawing.PointF;
-#endif
-#endif
 
 namespace Eto.Mac
 {
 	public static partial class MacConversions
 	{
-		public static NSColor ToNSUI(this Color color) => NSColor.FromDeviceRgba(color.R, color.G, color.B, color.A);
-
-		public static NSColor ToNSUI(this Color color, bool calibrated)
+		public static NSColor ToNSUI(this Color color)
 		{
-			return calibrated
-				? NSColor.FromCalibratedRgba(color.R, color.G, color.B, color.A)
-				: NSColor.FromDeviceRgba(color.R, color.G, color.B, color.A);
+			if (color.ControlObject is NSColor nscolor)
+				return nscolor;
+			if (color.ControlObject is CGColor cgcolor && MacVersion.IsAtLeast(10, 8))
+				return NSColor.FromCGColor(cgcolor);
+			return NSColor.FromSrgb(color.R, color.G, color.B, color.A);
 		}
 
-		public static Color ToEto(this NSColor color, bool calibrated = true)
+		[Obsolete("Use ToEtoWithAppearance(NSColor) instead")]
+		public static Color ToEtoWithAppearance(this NSColor color, bool calibrated) => ToEtoWithAppearance(color);
+		
+		public static Color ToEtoWithAppearance(this NSColor color)
 		{
 			if (color == null)
 				return Colors.Transparent;
-			var colorspace = calibrated ? NSColorSpace.CalibratedRGB : NSColorSpace.DeviceRGB;
-			var converted = color.UsingColorSpaceFast(colorspace);
+
+			if (MacVersion.IsAtLeast(11, 0))
+			{
+				// use the effective appearance to get the proper RGB values, 
+				// otherwise it uses NSAppearance.CurrentDrawingAppearance which can be different than the app appearance
+				// when not in a drawing context
+				var effectiveAppearance = NSApplication.SharedApplication.EffectiveAppearance;
+				if (NSAppearance.CurrentDrawingAppearance == effectiveAppearance)
+					return color.ToEto();
+					
+				Color result = Colors.Black;
+				effectiveAppearance.PerformAsCurrentDrawingAppearance(() =>
+				{
+					result = color.ToEto();
+				});
+				return result;
+			}
+
+			if (MacVersion.IsAtLeast(10, 14))
+			{
+				// for macOS 10.14/10.15.. should I really be supporting this?  meh.
+				// Save and restore the current appearance around the color conversion
+#pragma warning disable CA1422
+				NSAppearance saved = NSAppearance.CurrentAppearance;
+				var effectiveAppearance = NSApplication.SharedApplication.EffectiveAppearance;
+				if (saved == effectiveAppearance)
+					return color.ToEto();
+					
+				if (effectiveAppearance != null)
+					NSAppearance.CurrentAppearance = effectiveAppearance;
+
+				var result = color.ToEto();
+				NSAppearance.CurrentAppearance = saved;
+#pragma warning restore CA1422
+				return result;
+			}
+			
+			return color.ToEto();
+		}
+
+		[Obsolete("Use ToEto(NSColor) instead")]
+		public static Color ToEto(this NSColor color, bool calibrated) => ToEto(color);
+
+		public static Color ToEto(this NSColor color) => ToEto(color, null);
+	
+		public static Color ToEto(this NSColor color, NSColorSpace colorspace)
+		{
+			if (color == null)
+				return Colors.Transparent;
+
+			colorspace ??= NSColorSpace.SRGBColorSpace;
+
+			var converted = color.UsingColorSpace(colorspace);
 			if (converted == null)
 			{
 				// Convert named (e.g. system) colors to RGB using its CGColor
-				converted = color.CGColor.ToNS().UsingColorSpaceFast(colorspace);
+				converted = color.ToCG().ToNS().UsingColorSpace(colorspace);
+
 				if (converted == null)
-					throw new ArgumentOutOfRangeException("color", "Color cannot be converted to an RGB colorspace");
+					return new Color(color, 0, 0, 0, 1f);
 			}
 			nfloat red, green, blue, alpha;
 			converted.GetRgba(out red, out green, out blue, out alpha);
-			return new Color((float)red, (float)green, (float)blue, (float)alpha);
+			return new Color(color, (float)red, (float)green, (float)blue, (float)alpha);
 		}
-
+		
 		public static NSRange ToNS(this Range<int> range)
 		{
 			return new NSRange(range.Start, range.End - range.Start + 1);
@@ -189,17 +209,53 @@ namespace Eto.Mac
 			return new GridCellMouseEventArgs(column, row, col, item, buttons, modifiers, location);
 		}
 
-		public static PointF GetLocation(NSView view, NSEvent theEvent) => theEvent.LocationInWindow.ToEto(view);
-
-		public static MouseEventArgs GetMouseEvent(NSView view, NSEvent theEvent, bool includeWheel)
+		public static MouseEventArgs GetMouseEvent(IMacViewHandler handler, NSEvent theEvent, bool includeWheel)
 		{
-			var pt = MacConversions.GetLocation(view, theEvent);
-			Keys modifiers = theEvent.ModifierFlags.ToEto();
-			MouseButtons buttons = theEvent.GetMouseButtons();
 			SizeF? delta = null;
-			if (includeWheel)
-				delta = new SizeF((float)theEvent.DeltaX, (float)theEvent.DeltaY);
-			return new MouseEventArgs(buttons, modifiers, pt, delta);
+			PointF point;
+			Keys modifiers;
+			MouseButtons buttons;
+			bool isDirectionInverted = false;
+			if (theEvent != null)
+			{
+				NSView view = handler.ContainerControl;
+				var pt = theEvent.LocationInWindow;
+				pt = handler.GetAlignmentPointForFramePoint(pt);
+				if (theEvent.Window == null)
+				{
+					// flip to top down first
+					pt.Y = NSScreen.Screens[0].Frame.Height - pt.Y;
+					point = handler.Widget.PointFromScreen(pt.ToEto());
+				}
+				else if (view == null || view.Window != theEvent.Window)
+				{
+					var loc = theEvent.Window.Frame.Location.ToEto();
+					pt.X += loc.X;
+					pt.Y += loc.Y;
+					pt.Y = NSScreen.Screens[0].Frame.Height - pt.Y;
+					point = handler.Widget.PointFromScreen(pt.ToEto());
+				}
+				else
+				{
+					point = pt.ToEto(view);
+				}
+					
+				if (includeWheel)
+				{
+					delta = new SizeF((float)theEvent.DeltaX, (float)theEvent.DeltaY);
+					// only valid for scroll wheel and flick events, which is all includeWheel is used for
+					isDirectionInverted = theEvent.IsDirectionInvertedFromDevice;
+				}
+				modifiers = theEvent.ModifierFlags.ToEto();
+				buttons = theEvent.GetMouseButtons();
+			}
+			else
+			{
+				point = handler.Widget.PointFromScreen(Mouse.Position);
+				modifiers = Keyboard.Modifiers;
+				buttons = Mouse.Buttons;
+			}
+			return new MouseEventArgs(buttons, modifiers, point, delta, 1.0f, isDirectionInverted);
 		}
 
 		public static MouseButtons GetMouseButtons(this NSEvent theEvent)
@@ -224,7 +280,22 @@ namespace Eto.Mac
 				case NSEventType.OtherMouseUp:
 				case NSEventType.OtherMouseDown:
 				case NSEventType.OtherMouseDragged:
-					buttons |= MouseButtons.Middle;
+					var buttonNumber = (int)theEvent.ButtonNumber;
+                    switch (buttonNumber)
+                    {
+						case 0:
+							buttons |= MouseButtons.Primary;
+							break;
+						case 1:
+							buttons |= MouseButtons.Alternate;
+							break;
+						case 2:
+							buttons |= MouseButtons.Middle;
+							break;
+					}
+					break;
+				default:
+					buttons = Mouse.Buttons;
 					break;
 			}
 			return buttons;
@@ -250,7 +321,6 @@ namespace Eto.Mac
 				var mainScale = Screen.PrimaryScreen.RealScale;
 				var scales = new[] { 1f, 2f }; // generate both retina and non-retina representations
 				var sz = (float)Math.Ceiling(size.Value / mainScale);
-				var rep = nsimage.BestRepresentation(new CGRect(0, 0, sz, sz), null, null);
 				sz = size.Value;
 				var imgsize = image.Size;
 				var max = Math.Max(imgsize.Width, imgsize.Height);
@@ -260,11 +330,20 @@ namespace Eto.Mac
 				foreach (var scale in scales)
 				{
 					sz = (float)Math.Ceiling(size.Value * scale / mainScale);
-					rep = nsimage.BestRepresentation(new CGRect(0, 0, sz, sz), null, null);
+					var rep = nsimage.BestRepresentation(new CGRect(0, 0, sz, sz), null, null);
 					max = (int)Math.Max(rep.PixelsWide, rep.PixelsHigh);
 					sz = (float)Math.Ceiling(size.Value * scale);
-					var newsize = new CGSize((nint)(sz * rep.PixelsWide / max), (nint)(sz * rep.PixelsHigh / max));
-					newimage.AddRepresentation(rep.Resize(newsize, imageSize: newimagesize));
+					if (rep is NSCustomImageRep custom)
+					{
+						rep = custom.Copy() as NSImageRep;
+						rep.Size = newimagesize;
+						newimage.AddRepresentation(rep);
+					}
+					else
+					{
+						var newsize = new CGSize((nint)(sz * rep.PixelsWide / max), (nint)(sz * rep.PixelsHigh / max));
+						newimage.AddRepresentation(rep.Resize(newsize, imageSize: newimagesize));
+					}
 				}
 				nsimage = newimage;
 			}
@@ -311,41 +390,80 @@ namespace Eto.Mac
 
 		public static WindowStyle ToEtoWindowStyle(this NSWindowStyle style)
 		{
-			return style.HasFlag(NSWindowStyle.Borderless) ? WindowStyle.None : WindowStyle.Default;
+			return style.HasFlag(NSWindowStyle.Utility) 
+				? WindowStyle.Utility
+				: style.HasFlag(NSWindowStyle.Titled) 
+				? WindowStyle.Default 
+				: WindowStyle.None;
 		}
 
 		public static NSWindowStyle ToNS(this WindowStyle style, NSWindowStyle existing)
 		{
-			const NSWindowStyle NONE_STYLE = NSWindowStyle.Borderless;
-			const NSWindowStyle DEFAULT_STYLE = NSWindowStyle.Titled;
+			existing &= ~(NSWindowStyle.Utility | NSWindowStyle.Titled | NSWindowStyle.Borderless);
 			switch (style)
 			{
 				case WindowStyle.Default:
-					return (existing & ~NONE_STYLE) | DEFAULT_STYLE;
+					return existing | NSWindowStyle.Titled;
 				case WindowStyle.None:
-					return (existing & ~DEFAULT_STYLE) | NONE_STYLE;
+					return existing | NSWindowStyle.Borderless;
+				case WindowStyle.Utility:
+					return existing | NSWindowStyle.Utility | NSWindowStyle.Titled;
 				default:
 					throw new NotSupportedException();
 			}
 		}
 
+		/// <summary>
+		/// Gets the character input for the key event, or null if the key does not correspond to a character.
+		/// </summary>
+		/// <remarks>
+		/// macOS reports non-character keys such as the arrow keys, function keys, page up/down, home/end, etc.
+		/// using the unicode private use area reserved for function keys, so exclude those.
+		/// </remarks>
+		static char? GetKeyChar(NSEvent theEvent)
+		{
+			var characters = theEvent.Characters;
+			if (string.IsNullOrEmpty(characters))
+				return null;
+			var keyChar = characters[0];
+			if (keyChar >= 0xF700 && keyChar <= 0xF8FF)
+				return null;
+			return keyChar;
+		}
+
 		public static KeyEventArgs ToEtoKeyEventArgs(this NSEvent theEvent)
 		{
-			char keyChar = !string.IsNullOrEmpty(theEvent.Characters) ? theEvent.Characters[0] : '\0';
-			Keys key = KeyMap.MapKey(theEvent.KeyCode);
+			char? keyChar = GetKeyChar(theEvent);
+			var charactersIgnoringModifiers = theEvent.CharactersIgnoringModifiers;
+			Keys key = Keys.None;
+			if (!string.IsNullOrEmpty(charactersIgnoringModifiers)
+				&& !char.IsControl(charactersIgnoringModifiers[0])
+				&& !theEvent.ModifierFlags.HasFlag(NSEventModifierMask.NumericPadKeyMask))
+			{
+				key = KeyMap.Convert(charactersIgnoringModifiers, 0);
+			}
+			if (key == Keys.None)
+			{
+				// Use the physical key for non-character and numeric-pad keys. NSEvent.KeyCode
+				// does not respect alternative keyboard layouts for printable keys.
+				key = KeyMap.MapKey(theEvent.KeyCode, theEvent.ModifierFlags);
+			}
 			KeyEventArgs kpea;
 			Keys modifiers = theEvent.ModifierFlags.ToEto();
 			key |= modifiers;
+
+			KeyEventType keyEventType = theEvent.Type == NSEventType.KeyUp ? KeyEventType.KeyUp : KeyEventType.KeyDown;
+
 			if (key != Keys.None)
 			{
 				if (((modifiers & ~(Keys.Shift | Keys.Alt)) == 0))
-					kpea = new KeyEventArgs(key, KeyEventType.KeyDown, keyChar);
+					kpea = new KeyEventArgs(key, keyEventType, keyChar);
 				else
-					kpea = new KeyEventArgs(key, KeyEventType.KeyDown);
+					kpea = new KeyEventArgs(key, keyEventType);
 			}
 			else
 			{
-				kpea = new KeyEventArgs(key, KeyEventType.KeyDown, keyChar);
+				kpea = new KeyEventArgs(key, keyEventType, keyChar);
 			}
 			return kpea;
 		}
@@ -363,6 +481,11 @@ namespace Eto.Mac
 		public static SizeF ToEtoSize(this NSEdgeInsets insets)
 		{
 			return new SizeF((float)(insets.Left + insets.Right), (float)(insets.Top + insets.Bottom));
+		}
+
+		public static Padding ToEto(this NSEdgeInsets insets)
+		{
+			return new Padding((int)insets.Left, (int)insets.Top, (int)insets.Right, (int)insets.Bottom);
 		}
 
 		public static CalendarMode ToEto(this NSDatePickerMode mode)
@@ -498,7 +621,12 @@ namespace Eto.Mac
 			}
 		}
 
-		public static DataObject ToEto(this NSPasteboard pasteboard) => new DataObject(new DataObjectHandler(pasteboard));
+		public static DataObject ToEto(this NSPasteboard pasteboard)
+		{
+			if (pasteboard == null)
+				return null;
+			return new DataObject(new DataObjectHandler(pasteboard));
+		}
 
 		public static NSPasteboard ToNS(this DataObject data) => DataObjectHandler.GetControl(data);
 
@@ -535,6 +663,73 @@ namespace Eto.Mac
 			text = text.Replace("&", "");
 			text = text.Replace("\x01", "&");
 			return text;
+		}
+
+		public static NSCursor ToNS(this Cursor cursor) => CursorHandler.GetControl(cursor);
+
+		public static NSLineBreakMode ToNS(this FormattedTextTrimming trim)
+		{
+			switch (trim)
+			{
+				case FormattedTextTrimming.CharacterEllipsis:
+				case FormattedTextTrimming.WordEllipsis:
+					return NSLineBreakMode.TruncatingTail;
+				default:
+				case FormattedTextTrimming.None:
+					return NSLineBreakMode.Clipping;
+			}
+		}
+
+		public static NSLineBreakMode ToNS(this FormattedTextWrapMode wrap)
+		{
+			switch (wrap)
+			{
+				case FormattedTextWrapMode.Character:
+					return NSLineBreakMode.CharWrapping;
+				case FormattedTextWrapMode.Word:
+					return NSLineBreakMode.ByWordWrapping;
+				default:
+				case FormattedTextWrapMode.None:
+					return NSLineBreakMode.Clipping;
+			}
+		}
+
+		public static NSLineBreakMode ToNS(this WrapMode wrap)
+		{
+			switch (wrap)
+			{
+				case WrapMode.Character:
+					return NSLineBreakMode.CharWrapping;
+				case WrapMode.Word:
+					return NSLineBreakMode.ByWordWrapping;
+				default:
+				case WrapMode.None:
+					return NSLineBreakMode.Clipping;
+			}
+		}
+		public static NSTextAlignment ToNS(this FormattedTextAlignment align)
+		{
+			switch (align)
+			{
+				case FormattedTextAlignment.Left:
+					return NSTextAlignment.Left;
+				case FormattedTextAlignment.Center:
+					return NSTextAlignment.Center;
+				case FormattedTextAlignment.Right:
+					return NSTextAlignment.Right;
+				case FormattedTextAlignment.Justify:
+					return NSTextAlignment.Justified;
+				default:
+					throw new NotSupportedException();
+			}
+		}
+		
+		public static Image ToEto(this NSImage image)
+		{
+			if (image.Representations().Length == 1)
+				return new Bitmap(new BitmapHandler(image));
+			else
+				return new Icon(new IconHandler(image));
 		}
 	}
 }

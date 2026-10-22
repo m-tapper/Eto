@@ -1,9 +1,3 @@
-using System;
-using Eto.Drawing;
-using System.Linq;
-using System.Text;
-using System.Collections.Generic;
-
 namespace Eto.GtkSharp.Drawing
 {
 	public static class FontHandlerExtensions
@@ -68,6 +62,7 @@ namespace Eto.GtkSharp.Drawing
 
 		Dictionary<SystemFont, Gtk.Widget> fontMap = new Dictionary<SystemFont, Gtk.Widget> 
 		{
+			{ SystemFont.User, new Gtk.Entry() },
 			{ SystemFont.Default, new Gtk.Entry() },
 			{ SystemFont.Bold, new Gtk.Entry() },
 			{ SystemFont.Label, new Gtk.Label() },
@@ -131,8 +126,24 @@ namespace Eto.GtkSharp.Drawing
 				if (attributes == null)
 				{
 					attributes = new Pango.AttrList();
-					attributes.Insert(new Pango.AttrUnderline(FontDecoration.HasFlag(FontDecoration.Underline) ? Pango.Underline.Single : Pango.Underline.None));
-					attributes.Insert(new Pango.AttrStrikethrough(FontDecoration.HasFlag(FontDecoration.Strikethrough)));
+					// Only insert decoration attributes when actually requested.
+					// Inserting AttrUnderline(None) / AttrStrikethrough(false)
+					// over the whole text range would override any per-span
+					// underline/strikethrough that consumers set via Pango
+					// markup (e.g. Gtk.Label.Markup = "<u>X</u>foo"), wiping
+					// it out the moment Font is reassigned.
+					if (FontDecoration.HasFlag(FontDecoration.Underline))
+						attributes.Insert(new Pango.AttrUnderline(Pango.Underline.Single));
+					if (FontDecoration.HasFlag(FontDecoration.Strikethrough))
+						attributes.Insert(new Pango.AttrStrikethrough(true));
+					// Widget consumers (Gtk.Label.Attributes etc.) honor what's in
+					// this AttrList but don't pick up the layout's default
+					// FontDescription. Historically the FontDescription was
+					// communicated via Widget.OverrideFont, which is a deprecated
+					// no-op on Gtk 3.20+. AttrFontDesc carries the whole
+					// description -- family, size, weight, style -- in one shot.
+					if (Control != null)
+						attributes.Insert(new Pango.AttrFontDesc(Control));
 				}
 				return attributes;
 			}
@@ -191,7 +202,9 @@ namespace Eto.GtkSharp.Drawing
 
 			foreach (var face in family.Faces)
 			{
-				var faceDesc = face.Describe();
+				var faceDesc = face?.Describe();
+				if (faceDesc == null)
+					continue;
 				if (faceDesc.Weight == weight && faceDesc.Style == style && faceDesc.Stretch == stretch)
 				{
 					return face;
@@ -307,6 +320,9 @@ namespace Eto.GtkSharp.Drawing
 				return xheight ?? 0f;
 			}
 		}
+
+		public float UnderlinePosition => -((float)Metrics.UnderlinePosition / (float)Pango.Scale.PangoScale);
+		public float UnderlineThickness => (float)Metrics.UnderlineThickness / (float)Pango.Scale.PangoScale;
 
 		Pango.Layout measureLayout;
 

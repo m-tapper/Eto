@@ -1,9 +1,4 @@
-﻿using System;
-using System.ComponentModel;
-using Eto.Drawing;
-using Eto.Forms;
-
-namespace Eto.Test.Sections.Controls
+﻿namespace Eto.Test.Sections.Controls
 {
 	[Section("Controls", typeof(FontPicker))]
 	public class FontPickerSection : Panel
@@ -24,7 +19,7 @@ namespace Eto.Test.Sections.Controls
 
 			layout.BeginHorizontal();
 			layout.Add(new Label { Text = "Initial Value: ", VerticalAlignment = VerticalAlignment.Center });
-			var fontpicker2 = new FontPicker(new Font(SystemFont.Default));
+			var fontpicker2 = new FontPicker(SystemFonts.User());
 			LogEvents(fontpicker2);
 			layout.Add(fontpicker2, true, false);
 			layout.EndHorizontal();

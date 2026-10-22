@@ -1,9 +1,3 @@
-using System;
-using System.ComponentModel;
-using sd = System.Drawing;
-using swf = System.Windows.Forms;
-using Eto.Drawing;
-using Eto.Forms;
 using Eto.WinForms.Forms;
 using Eto.WinForms.Drawing;
 
@@ -16,7 +10,34 @@ namespace Eto.WinForms.Forms
 		swf.IWin32Window Win32Window { get; }
 	}
 
-	public abstract class WindowHandler<TControl, TWidget, TCallback> : WindowsPanel<TControl, TWidget, TCallback>, Window.IHandler, IWindowHandler
+	public class WindowHandler : Window.IWindowHandler
+	{
+		internal static readonly object MovableByWindowBackground_Key = new object();
+		internal static readonly object IsClosing_Key = new object();
+		internal static readonly object MonitorKeys_Key = new object();
+		internal static readonly object KeyMonitor_Key = new object();
+		internal static readonly object Closeable_Key = new object();
+
+		public Window FromPoint(PointF point)
+		{
+			var screenPoint = point.LogicalToScreen();
+			var windowHandle = Win32.WindowFromPoint(new Win32.POINT(screenPoint.X, screenPoint.Y));
+			if (windowHandle == IntPtr.Zero)
+				return null;
+			windowHandle = Win32.GetAncestor(windowHandle, Win32.GA.GA_ROOT);
+			
+			foreach (var window in Application.Instance.Windows)
+			{
+				if (window.NativeHandle == windowHandle)
+				{
+					return window;
+				}
+			}
+			return null;
+		}
+	}
+
+	public abstract class WindowHandler<TControl, TWidget, TCallback> : WindowsPanel<TControl, TWidget, TCallback>, Window.IHandler, IWindowHandler, Win32.KeyMonitor.ITarget
 		where TControl : swf.Form
 		where TWidget : Window
 		where TCallback : Window.ICallback
@@ -31,6 +52,12 @@ namespace Eto.WinForms.Forms
 		bool resizable;
 		bool clientWidthSet;
 		bool clientHeightSet;
+
+		public bool ShowShellDropForWindow
+		{
+			get => AllowDrop;
+			set => AllowDrop = value;
+		}
 
 		public virtual bool IsAttached => false;
 		public override swf.Control ContainerContentControl
@@ -58,21 +85,46 @@ namespace Eto.WinForms.Forms
 			{
 				if (Widget.Loaded)
 				{
-					var size = Control.Size - content.Size;
-					Control.Size = new sd.Size(value.Width + size.Width, value.Height + size.Height);
+					var size = DeviceUnitsToLogical(Control.Size - content.Size);
+					Control.Size = LogicalToDeviceUnits(new Size(value.Width + size.Width, value.Height + size.Height));
 				}
 				else
 				{
-					content.MinimumSize = content.MaximumSize = value.ToSD();
+					content.MinimumSize = content.MaximumSize = LogicalToDeviceUnits(value);
 				}
 				clientWidthSet = value.Width != -1;
 				clientHeightSet = value.Height != -1;
 			}
 		}
 
+		public bool MovableByWindowBackground
+		{
+			get => Widget.Properties.Get<bool>(WindowHandler.MovableByWindowBackground_Key);
+			set
+			{
+				if (Widget.Properties.TrySet(WindowHandler.MovableByWindowBackground_Key, value))
+				{
+					if (value)
+						Widget.MouseDown += Content_MouseDown;
+					else
+						Widget.MouseDown -= Content_MouseDown;
+				}
+			}
+		}
+
+		private void Content_MouseDown(object sender, MouseEventArgs e)
+		{
+			if (e.Buttons == MouseButtons.Primary)
+			{
+				Win32.ReleaseCapture();
+				Win32.SendMessage(Control.Handle, Win32.WM.NCLBUTTONDOWN, (IntPtr)Win32.HT.CAPTION, IntPtr.Zero);
+				e.Handled = true;
+			}
+		}
+
 		protected override bool SetMinimumSize(Size size)
 		{
-			var sdsize = Size.Max(size, MinimumSize).ToSD();
+			var sdsize = LogicalToDeviceUnits(Size.Max(size, MinimumSize));
 			if (Control.MinimumSize != sdsize)
 			{
 				Control.MinimumSize = sdsize;
@@ -85,6 +137,10 @@ namespace Eto.WinForms.Forms
 		{
 			if (IsAttached)
 				return;
+
+			// show shell drop images for the entire window
+			ShowShellDropForWindow = true;
+
 			Control.KeyPreview = !ApplicationHandler.BubbleKeyEvents;
 			Control.FormBorderStyle = DefaultWindowStyle;
 			resizable = Control.FormBorderStyle.IsResizable();
@@ -126,13 +182,13 @@ namespace Eto.WinForms.Forms
 			// ensure we auto size to the content
 			if ((!clientWidthSet || !clientHeightSet) /*&& Control.AutoSize*/ && contentSize != null)
 			{
-				var sz = contentSize.Value.ToSD(); // Content.GetPreferredSize().ToSD();
-				var min = new sd.Size();
+				var sz = contentSize.Value; // Content.GetPreferredSize().ToSD();
+				var min = new Size();
 				if (!clientWidthSet)
 					min.Width = sz.Width;
 				if (!clientHeightSet)
 					min.Height = sz.Height;
-				ContainerContentControl.MinimumSize = min;
+				ContainerContentControl.MinimumSize = LogicalToDeviceUnits(min);
 			}
 			// turn off auto sizing so user can then resize the forms
 			var size = Control.Size;
@@ -140,6 +196,8 @@ namespace Eto.WinForms.Forms
 			Control.Size = size;
 			content.MinimumSize = content.MaximumSize = sd.Size.Empty;
 			ContainerContentControl.MinimumSize = sd.Size.Empty;
+
+			Callback.OnLoadComplete(Widget, EventArgs.Empty);
 		}
 
 		public override Size Size
@@ -169,7 +227,7 @@ namespace Eto.WinForms.Forms
 					availableSize.Width = 0;
 				if (!clientHeightSet)
 					availableSize.Height = 0;
-				contentSize = Content.GetPreferredSize(availableSize);
+				contentSize = Size.Ceiling(Content?.GetPreferredSize(availableSize) ?? Size.Empty);
 			}
 		}
 		Size? contentSize;
@@ -188,21 +246,7 @@ namespace Eto.WinForms.Forms
 					Control.FormClosed += (sender, e) => Callback.OnClosed(Widget, EventArgs.Empty);
 					break;
 				case Window.ClosingEvent:
-					Control.FormClosing += delegate(object sender, swf.FormClosingEventArgs e)
-					{
-						var args = new CancelEventArgs(e.Cancel);
-						Callback.OnClosing(Widget, args);
-
-						if (!e.Cancel && swf.Application.OpenForms.Count <= 1
-						    || e.CloseReason == swf.CloseReason.ApplicationExitCall
-						    || e.CloseReason == swf.CloseReason.WindowsShutDown)
-						{
-							var app = ((ApplicationHandler)Application.Instance.Handler);
-							app.Callback.OnTerminating(app.Widget, args);
-						}
-
-						e.Cancel = args.Cancel;
-					};
+					Control.FormClosing += Control_FormClosing;
 					break;
 				case Eto.Forms.Control.ShownEvent:
 					Control.Shown += delegate
@@ -217,10 +261,7 @@ namespace Eto.WinForms.Forms
 					};
 					break;
 				case Eto.Forms.Control.LostFocusEvent:
-					Control.Deactivate += delegate
-					{
-						Callback.OnLostFocus(Widget, EventArgs.Empty);
-					};
+					Control.Deactivate += (sender, e) => Application.Instance.AsyncInvoke(() => Callback.OnLostFocus(Widget, EventArgs.Empty));
 					break;
 				case Window.WindowStateChangedEvent:
 					var oldState = Control.WindowState;
@@ -230,16 +271,147 @@ namespace Eto.WinForms.Forms
 						{
 							oldState = Control.WindowState;
 							Callback.OnWindowStateChanged(Widget, EventArgs.Empty);
+							if (!Closeable)
+								SetSystemMenu();
 						}
 					};
 					break;
 				case Window.LocationChangedEvent:
 					Control.LocationChanged += (sender, e) => Callback.OnLocationChanged(Widget, EventArgs.Empty);
 					break;
+				case Window.PreviewKeyDownEvent:
+				case Window.PreviewKeyUpEvent:
+					AttachKeyMonitor();
+					break;
 				default:
 					base.AttachEvent(id);
 					break;
 			}
+		}
+
+		bool MonitorKeys
+		{
+			get => Widget.Properties.Get<bool>(WindowHandler.MonitorKeys_Key);
+			set => Widget.Properties.Set(WindowHandler.MonitorKeys_Key, value);
+		}
+
+		IDisposable KeyMonitor
+		{
+			get => Widget.Properties.Get<IDisposable>(WindowHandler.KeyMonitor_Key);
+			set => Widget.Properties.Set(WindowHandler.KeyMonitor_Key, value);
+		}
+
+		/// <summary>
+		/// Both preview key events share a single registration, since the underlying hook reports key
+		/// down and key up together. Raising a callback nobody subscribed to is harmless.
+		/// </summary>
+		/// <remarks>
+		/// The registration goes in a process wide list, so it is deferred until the window is loaded
+		/// and dropped again when it unloads. A window that is never shown never registers, and one
+		/// that is closed lets go without waiting for a Dispose that may never come.
+		/// </remarks>
+		void AttachKeyMonitor()
+		{
+			MonitorKeys = true;
+			if (Widget.Loaded)
+				RegisterKeyMonitor();
+		}
+
+		void RegisterKeyMonitor()
+		{
+			if (KeyMonitor == null)
+				KeyMonitor = Win32.KeyMonitor.Register(this);
+		}
+
+		IntPtr Win32.KeyMonitor.ITarget.KeyMonitorHandle => Control.IsHandleCreated ? Control.Handle : IntPtr.Zero;
+
+		void Win32.KeyMonitor.ITarget.OnKeyMonitorKey(int virtualKey, bool isKeyDown)
+		{
+			var key = ((swf.Keys)virtualKey).ToEto();
+			if (isKeyDown)
+				Callback.OnPreviewKeyDown(Widget, new KeyMonitorEventArgs(key, KeyEventType.KeyDown));
+			else
+				Callback.OnPreviewKeyUp(Widget, new KeyMonitorEventArgs(key, KeyEventType.KeyUp));
+		}
+
+		void DetachKeyMonitor()
+		{
+			var monitor = KeyMonitor;
+			if (monitor == null)
+				return;
+			monitor.Dispose();
+			KeyMonitor = null;
+		}
+
+		public override bool DetachEvent(string id)
+		{
+			switch (id)
+			{
+				case Window.PreviewKeyDownEvent:
+				case Window.PreviewKeyUpEvent:
+					// one registration serves both, so only give it up when neither is still wanted
+					var other = id == Window.PreviewKeyDownEvent ? Window.PreviewKeyUpEvent : Window.PreviewKeyDownEvent;
+					if (!IsEventHandled(other))
+					{
+						MonitorKeys = false;
+						DetachKeyMonitor();
+					}
+					return true;
+				default:
+					return base.DetachEvent(id);
+			}
+		}
+
+		public override void OnLoad(EventArgs e)
+		{
+			base.OnLoad(e);
+			if (MonitorKeys)
+				RegisterKeyMonitor();
+		}
+
+		public override void OnUnLoad(EventArgs e)
+		{
+			base.OnUnLoad(e);
+			DetachKeyMonitor();
+		}
+
+		protected override void Dispose(bool disposing)
+		{
+			DetachKeyMonitor();
+			base.Dispose(disposing);
+		}
+
+		bool IsClosing
+		{
+			get => Widget.Properties.Get<bool>(WindowHandler.IsClosing_Key);
+			set => Widget.Properties.Set(WindowHandler.IsClosing_Key, value);
+		}
+
+		private void Control_FormClosing(object sender, swf.FormClosingEventArgs e)
+		{
+			IsClosing = true;
+			var args = new CancelEventArgs(e.Cancel);
+			Callback.OnClosing(Widget, args);
+
+			if (!e.Cancel && swf.Application.OpenForms.Count <= 1
+				|| e.CloseReason == swf.CloseReason.ApplicationExitCall
+				|| e.CloseReason == swf.CloseReason.WindowsShutDown)
+			{
+				var app = ((ApplicationHandler)Application.Instance.Handler);
+				app.Callback.OnTerminating(app.Widget, args);
+			}
+
+			e.Cancel = args.Cancel;
+			IsClosing = !e.Cancel;
+			
+			if (!e.Cancel)
+			{
+				InternalClosing();
+			}
+		}
+
+		internal virtual void InternalClosing()
+		{
 		}
 
 		public MenuBar Menu
@@ -290,14 +462,55 @@ namespace Eto.WinForms.Forms
 
 		public virtual bool Maximizable
 		{
-			get { return Control.MaximizeBox; }
-			set { Control.MaximizeBox = value; }
+			get => Control.MaximizeBox;
+			set
+			{
+				if (Maximizable != value)
+				{
+					Control.MaximizeBox = value;
+					SetSystemMenu();
+				}
+			}
 		}
 
 		public virtual bool Minimizable
 		{
-			get { return Control.MinimizeBox; }
-			set { Control.MinimizeBox = value; }
+			get => Control.MinimizeBox;
+			set
+			{
+				if (Minimizable != value)
+				{
+					Control.MinimizeBox = value;
+					SetSystemMenu();
+				}
+			}
+		}
+
+		public virtual bool Closeable
+		{
+			get => Widget.Properties.Get<bool>(WindowHandler.Closeable_Key, true);
+			set
+			{
+				if (Widget.Properties.TrySet(WindowHandler.Closeable_Key, value, true))
+				{
+					// when the window is maximized/minimized the state of the close button is lost.
+					HandleEvent(Window.WindowStateChangedEvent);
+					SetSystemMenu();
+				}
+			}
+		}
+
+		void SetSystemMenu()
+		{
+			var useSystemMenu = Closeable || Minimizable || Maximizable;
+			Control.ControlBox = useSystemMenu;
+			
+			var sysMenu = Win32.GetSystemMenu(NativeHandle, false);
+			if (sysMenu != IntPtr.Zero)
+			{
+				var closeFlags = Closeable ? Win32.MF.BYCOMMAND : Win32.MF.GRAYED;
+				Win32.EnableMenuItem(sysMenu, Win32.SC.CLOSE, closeFlags);
+			}
 		}
 
 		public virtual bool ShowInTaskbar
@@ -314,10 +527,7 @@ namespace Eto.WinForms.Forms
 
 		public Eto.Forms.ToolBar ToolBar
 		{
-			get
-			{
-				return toolBar;
-			}
+			get => toolBar;
 			set
 			{
 				toolbarHolder.SuspendLayout();
@@ -334,56 +544,54 @@ namespace Eto.WinForms.Forms
 			}
 		}
 
-		public void AddToolbar(Eto.Forms.ToolBar toolBar)
-		{
-			Control.Controls.Add((swf.Control)toolBar.ControlObject);
-		}
-
-		public void RemoveToolbar(Eto.Forms.ToolBar toolBar)
-		{
-			Control.Controls.Remove((swf.Control)toolBar.ControlObject);
-		}
-
-		public void ClearToolbars()
-		{
-			foreach (swf.Control c in Control.Controls)
-			{
-				if (c is swf.ToolBar)
-					Control.Controls.Remove(c);
-			}
-		}
-
 		public void Close()
 		{
-			Control.Close();
+			if (!IsClosing)
+				Control.Close();
 		}
 
 		public Icon Icon
 		{
-			get { return icon; }
+			get => icon;
 			set
 			{
 				icon = value;
 				Control.Icon = ((IWindowsIconSource)icon.Handler).GetIcon();
+				if (!Control.ShowIcon)
+				{
+					// For dialogs we don't show an icon by default and need to enable it here
+					Control.ShowIcon = true;
+				}
 			}
 		}
 
 		public string Title
 		{
-			get { return Control.Text; }
-			set { Control.Text = value; }
+			get => Control.Text;
+			set => Control.Text = value;
 		}
 
 		public new Point Location
 		{
-			get
-			{
-				return Control.Location.ToEto();
-			}
+			get => Control.DeviceUnitsToLogical(Control.Location);
 			set
 			{
-				Control.Location = value.ToSD();
+				Control.Location = Control.LogicalToDeviceUnits(value);
 				Control.StartPosition = swf.FormStartPosition.Manual;
+			}
+		}
+
+		public Rectangle Bounds
+		{
+			get => new Rectangle(Location, Size);
+			set
+			{
+				// Form.Bounds sets the location and size in a single operation.
+				UserPreferredSize = value.Size;
+				Control.Bounds = new sd.Rectangle(LogicalToDeviceUnits(value.Location), LogicalToDeviceUnits(value.Size));
+				Control.StartPosition = swf.FormStartPosition.Manual;
+				clientWidthSet = value.Width != -1;
+				clientHeightSet = value.Height != -1;
 			}
 		}
 
@@ -453,15 +661,32 @@ namespace Eto.WinForms.Forms
 
 		public virtual void BringToFront()
 		{
-			if (Control.WindowState == swf.FormWindowState.Minimized)
-				Control.WindowState = swf.FormWindowState.Normal;
-			Control.BringToFront();
-			Control.Activate();
+			RestoreFromMinimized();
+
+			var hWnd = NativeHandle;
+			if (hWnd != IntPtr.Zero)
+				Win32.SetWindowPos(hWnd, Win32.HWND_TOP, 0, 0, 0, 0, Win32.SWP.NOSIZE | Win32.SWP.NOMOVE | Win32.SWP.NOACTIVATE);
 		}
 
-		public void SendToBack()
+		public void SendToBack() => Control.SendToBack();
+
+		public override void Focus()
 		{
-			Control.SendToBack();
+			RestoreFromMinimized();
+
+			base.Focus();
+		}
+
+		private void RestoreFromMinimized()
+		{
+			if (Control.WindowState == swf.FormWindowState.Minimized)
+			{
+				var placement = new Win32.WINDOWPLACEMENT();
+				if (Win32.GetWindowPlacement(NativeHandle, ref placement) && placement.flags.HasFlag(Win32.WPF.RESTORETOMAXIMIZED))
+					Control.WindowState = swf.FormWindowState.Maximized;
+				else
+					Control.WindowState = swf.FormWindowState.Normal;
+			}
 		}
 
 		public virtual void SetOwner(Window owner)
@@ -469,21 +694,18 @@ namespace Eto.WinForms.Forms
 			Control.Owner = owner.ToSWF();
 		}
 
-		public Screen Screen
-		{
-			get { return swf.Screen.FromControl(Control).ToEto(); }
-		}
+		public Screen Screen => swf.Screen.FromControl(Control).ToEto();
 
 		public override bool Visible
 		{
-			get { return base.Visible; }
+			get { return Control.Visible; }
 			set
 			{
-				if (Visible != value)
+				//if (Visible != value)
 				{
-					base.Visible = value;
-					if (Widget.Loaded && value)
-						Callback.OnShown(Widget, EventArgs.Empty);
+					Control.Visible = value;
+				//	if (Widget.Loaded && value)
+				//		Callback.OnShown(Widget, EventArgs.Empty);
 				}
 			}
 		}
@@ -492,7 +714,22 @@ namespace Eto.WinForms.Forms
 		{
 			get
 			{
+#if NET9_0_OR_GREATER
+				return Control.DeviceDpi / 96f;
+#else
 				return 1f;
+#endif
+			}
+		}
+
+		public bool AutoSize
+		{
+			get => Control.AutoSize;
+			set
+			{
+				// TODO: not quite working as intended yet on winforms, user can't resize after this is turned on..
+				Control.AutoSizeMode = swf.AutoSizeMode.GrowAndShrink;
+				Control.AutoSize = value;
 			}
 		}
 	}

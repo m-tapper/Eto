@@ -1,5 +1,3 @@
-using Eto.Forms;
-
 namespace Eto.GtkSharp.Forms.ToolBar
 {
 	public class ToolBarHandler : WidgetHandler<Gtk.Toolbar, Eto.Forms.ToolBar>, Eto.Forms.ToolBar.IHandler
@@ -37,7 +35,7 @@ namespace Eto.GtkSharp.Forms.ToolBar
 			((IToolBarItemHandler)item.Handler).CreateControl(this, index);
 		}
 
-		public void RemoveButton(ToolItem item)
+		public void RemoveButton(ToolItem item, int index)
 		{
 			if (item.ControlObject != null) Control.Remove((Gtk.Widget)item.ControlObject);
 		}

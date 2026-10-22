@@ -1,14 +1,15 @@
-using swc = System.Windows.Controls;
-using Eto.Forms;
-using System;
-
 namespace Eto.Wpf.Forms.Menu
 {
 	public class SeparatorMenuItemHandler : WidgetHandler<swc.Separator, SeparatorMenuItem>, SeparatorMenuItem.IHandler
 	{
-		public SeparatorMenuItemHandler ()
+		public SeparatorMenuItemHandler()
 		{
-			Control = new swc.Separator ();
+			Control = new swc.Separator();
+		}
+
+		public SeparatorMenuItemHandler(swc.Separator control)
+		{
+			Control = control ?? new swc.Separator();
 		}
 
 		public string Text
@@ -33,6 +34,12 @@ namespace Eto.Wpf.Forms.Menu
 		{
 			get { return false; }
 			set { throw new NotSupportedException(); }
+		}
+
+		public bool Visible
+		{
+			get => Control.Visibility == sw.Visibility.Visible;
+			set => Control.Visibility = value ? sw.Visibility.Visible : sw.Visibility.Collapsed;
 		}
 
 		public void CreateFromCommand(Command command)

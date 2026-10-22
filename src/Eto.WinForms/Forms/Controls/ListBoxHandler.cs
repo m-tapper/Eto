@@ -1,17 +1,10 @@
-using System;
-using swf = System.Windows.Forms;
-using sd = System.Drawing;
-using Eto.Forms;
-using System.Collections.Generic;
-using System.Linq;
 using Eto.WinForms.Drawing;
-using Eto.Drawing;
-
 namespace Eto.WinForms.Forms.Controls
 {
 	public class ListBoxHandler : WindowsControl<swf.ListBox, ListBox, ListBox.ICallback>, ListBox.IHandler
 	{
-		CollectionHandler collection;
+		IIndirectBinding<string> _itemTextBinding;
+		CollectionHandler _collection;
 
 		public static int ItemPadding = 2;
 
@@ -36,7 +29,7 @@ namespace Eto.WinForms.Forms.Controls
 					ItemHeight = value.Height;
 				}
 			}
-			
+
 			protected override void OnMeasureItem(swf.MeasureItemEventArgs e)
 			{
 				base.OnMeasureItem(e);
@@ -171,15 +164,27 @@ namespace Eto.WinForms.Forms.Controls
 
 		public IEnumerable<object> DataStore
 		{
-			get { return collection != null ? collection.Collection : null; }
+			get { return _collection != null ? _collection.Collection : null; }
 			set
 			{
-				if (collection != null)
-					collection.Unregister();
-				collection = new CollectionHandler { Handler = this };
-				collection.Register(value);
+				if (_collection != null)
+					_collection.Unregister();
+				_collection = new CollectionHandler { Handler = this };
+				_collection.Register(value);
 			}
 		}
+
+		public IIndirectBinding<string> ItemTextBinding
+		{
+			get => _itemTextBinding;
+			set
+			{
+				_itemTextBinding = value;
+				Control.Invalidate();
+			}
+		}
+
+		public IIndirectBinding<string> ItemKeyBinding { get; set; }
 
 		static readonly Win32.WM[] intrinsicEvents = {
 														 Win32.WM.LBUTTONDOWN, Win32.WM.LBUTTONUP, Win32.WM.LBUTTONDBLCLK,
@@ -189,5 +194,14 @@ namespace Eto.WinForms.Forms.Controls
 		{
 			return !intrinsicEvents.Contains((Win32.WM)msg.Msg) && base.ShouldBubbleEvent(msg);
 		}
+
+		public BorderType Border
+		{
+			get { return Control.BorderStyle.ToEto(); }
+			set { Control.BorderStyle = value.ToSWF(); }
+		}
+
+		public IIndirectBinding<Image> ItemImageBinding { get; set; }
+
 	}
 }

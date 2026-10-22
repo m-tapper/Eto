@@ -1,47 +1,12 @@
-using System;
-using Eto.Forms;
 using Eto.Mac.Forms.Actions;
-using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.InteropServices;
 using Eto.Mac.Drawing;
-
-#if XAMMAC2
-using AppKit;
-using Foundation;
-using CoreGraphics;
-using ObjCRuntime;
-using CoreAnimation;
-using CoreImage;
 using System.Runtime.CompilerServices;
-#else
-using MonoMac.AppKit;
-using MonoMac.Foundation;
-using MonoMac.CoreGraphics;
-using MonoMac.ObjCRuntime;
-using MonoMac.CoreAnimation;
-using MonoMac.CoreImage;
-#if Mac64
-using nfloat = System.Double;
-using nint = System.Int64;
-using nuint = System.UInt64;
-#else
-using nfloat = System.Single;
-using nint = System.Int32;
-using nuint = System.UInt32;
-#endif
-#if SDCOMPAT
-using CGSize = System.Drawing.SizeF;
-using CGRect = System.Drawing.RectangleF;
-using CGPoint = System.Drawing.PointF;
-#endif
-#endif
-
 namespace Eto.Mac.Forms
 {
-	public class ApplicationHandler : WidgetHandler<NSApplication, Application, Application.ICallback>, Application.IHandler
+	public class ApplicationHandler : MacObject<NSApplication, Application, Application.ICallback>, Application.IHandler
 	{
-		bool attached;
+		bool _attached;
+		bool? _activateOnStartup;
 
 		internal static bool QueueResizing { get; set; }
 
@@ -50,6 +15,28 @@ namespace Eto.Mac.Forms
 		public bool AddFullScreenMenuItem { get; set; }
 
 		public bool AllowClosingMainForm { get; set; }
+
+		public bool ActivateOnStartup
+		{
+			get { return _activateOnStartup ?? !_attached && Debugger.IsAttached; }
+			set { _activateOnStartup = value; }
+		}
+
+		/// <summary>
+		/// Gets or sets a value indicating the app should take activation from whatever app currently holds it,
+		/// instead of asking for it cooperatively.
+		/// </summary>
+		/// <remarks>
+		/// macOS only hands activation to an app that asks for it when no other app is holding it, so an app
+		/// started while something else is frontmost can show a window that never becomes key - and a control
+		/// in it can never get focus. Turning this on takes activation regardless, which is only appropriate
+		/// when stealing focus from the user is expected - an automated test run being the usual case.
+		/// </remarks>
+		/// <value><c>true</c> to take activation from the frontmost app; otherwise, <c>false</c>. Defaults to <c>false</c>.</value>
+		public bool ActivateIgnoringOtherApps { get; set; }
+
+		// pointer to the initial menu so we know whether we want to keep it or not for the main form
+		internal IntPtr InitialMenu { get; set; }
 
 		/// <summary>
 		/// Gets or sets a value indicating whether native macOS crash reports are generated for uncaught .NET exceptions.
@@ -65,6 +52,19 @@ namespace Eto.Mac.Forms
 		/// </remarks>
 		/// <value><c>true</c> to enable native crash reports; otherwise, <c>false</c>.</value>
 		public bool EnableNativeCrashReport { get; set; } = !System.Diagnostics.Debugger.IsAttached;
+
+#if Mac64
+		/// <summary>
+		/// Gets or sets a value indicating whether we should translate native exceptions into .NET so it shows the .net stack trace
+		/// </summary>
+		/// <remarks>
+		/// This allows us to get the stack trace of the .NET Code if it calls something that causes a native crash.
+		/// 
+		/// There is currently no way to catch the translated exceptions, however the crash report will be much more useful.
+		/// </remarks>
+		/// <value><c>true</c> to enable native crash translation; otherwise, <c>false</c></value>
+		public bool EnableNativeExceptionTranslation { get; set; } = true;
+#endif
 
 		public ApplicationHandler()
 		{
@@ -106,6 +106,7 @@ namespace Eto.Mac.Forms
 			set
 			{
 				Control.DockTile.BadgeLabel = value ?? string.Empty;
+				Control.DockTile.Display();
 			}
 		}
 
@@ -134,11 +135,15 @@ namespace Eto.Mac.Forms
 			var args = new string[]
 			{
 				"-c",
-				"open \"$1\"", 
+				"open \"$1\"",
 				string.Empty,
 				NSBundle.MainBundle.BundlePath
 			};
+#if ( MACOS10_15_OR_GREATER && NET8_0_OR_GREATER ) || MONOMAC
+			NSTask.LaunchFromUrl(NSUrl.FromFilename("/bin/sh"), args, out var error, null);
+#else
 			NSTask.LaunchFromPath("/bin/sh", args);
+#endif
 		}
 
 		public void Invoke(Action action)
@@ -146,43 +151,54 @@ namespace Eto.Mac.Forms
 			if (NSThread.IsMain)
 				action();
 			else
-			{
-#if XAMMAC1
-				Control.InvokeOnMainThread(new NSAction(action));
-#else
 				Control.InvokeOnMainThread(action);
-#endif
-			}
 		}
 
 		public void AsyncInvoke(Action action)
 		{
-#if XAMMAC1
-			Control.BeginInvokeOnMainThread(new NSAction(action));
-#else
 			Control.BeginInvokeOnMainThread(action);
-#endif
 		}
 
 		public void Restart()
 		{
-			NSApplication.SharedApplication.WillTerminate += restart_WillTerminate;
-			NSApplication.SharedApplication.Terminate(AppDelegate);
+			// prevent System.InvalidOperationException:
+			// Event registration is overwriting existing delegate.
+			// Either just use events or your own delegate: Eto.Mac.AppDelegate
+			var oldDelegate = Control.Delegate;
+			Control.Delegate = null;
+			Control.WillTerminate += restart_WillTerminate;
+			Control.Terminate(AppDelegate);
 
 			// only get here if cancelled, remove event to restart
-			NSApplication.SharedApplication.WillTerminate -= restart_WillTerminate;
+			Control.WillTerminate -= restart_WillTerminate;
+			Control.Delegate = oldDelegate;
 		}
+
+		static readonly IntPtr selNextEventMatchingMaskUntilDateInModeDequeue_Handle = Selector.GetHandle("nextEventMatchingMask:untilDate:inMode:dequeue:");
+		static readonly IntPtr selSendEvent_Handle = Selector.GetHandle("sendEvent:");
 
 		public void RunIteration()
 		{
-#pragma warning disable 0618 // for some reason we get a warning (error in Release) here even though we aren't using an obsolete api.
-			NSApplication.SharedApplication.NextEvent(NSEventMask.AnyEvent, NSDate.DistantFuture, NSRunLoop.NSDefaultRunLoopMode, true);
-#pragma warning restore 0618
+			MacView.InMouseTrackingLoop = false;
+			// drain the event queue only for a short period of time so it doesn't lock up
+			var date = NSDate.FromTimeIntervalSinceNow(0.001);
+			for (; ; )
+			{
+				// dequeue the event
+				var evt = Control.NextEvent(NSEventMask.AnyEvent, date, NSRunLoopMode.Default, true);
+
+				// no event? cool, let's get out of here
+				if (evt == null)
+					break;
+
+				// dispatch the event
+				Control.SendEvent(evt);
+			}
 		}
 
 		public void Attach(object context)
 		{
-			attached = true;
+			_attached = true;
 		}
 
 		public void OnMainFormChanged()
@@ -191,10 +207,17 @@ namespace Eto.Mac.Forms
 
 		public void Run()
 		{
-			if (!attached)
+			if (!_attached)
 			{
 				if (EnableNativeCrashReport)
 					CrashReporter.Attach();
+
+#if Mac64
+				// convert objective-c exceptions into .NET exceptions
+				if (EnableNativeExceptionTranslation)
+					NSSetUncaughtExceptionHandler(UncaughtExceptionHandler);
+#endif
+
 
 				EtoBundle.Init();
 
@@ -211,12 +234,17 @@ namespace Eto.Mac.Forms
 		public void Initialize(NSApplicationDelegate appdelegate)
 		{
 			AppDelegate = appdelegate;
+			if (ActivateOnStartup)
+			{
+				// if we're debugging, make the app active when it starts
+				EnsureActivated(true, true, null);
+			}
 			Callback.OnInitialized(Widget, EventArgs.Empty);
 		}
 
 		public void Quit()
 		{
-			NSApplication.SharedApplication.Terminate((NSObject)AppDelegate ?? NSApplication.SharedApplication);
+			Control.Terminate((NSObject)AppDelegate ?? Control);
 		}
 
 		public bool QuitIsSupported { get { return true; } }
@@ -226,21 +254,74 @@ namespace Eto.Mac.Forms
 			NSWorkspace.SharedWorkspace.OpenUrl(new NSUrl(url));
 		}
 
+#if Mac64
+		delegate void UncaughtExceptionHandlerDelegate(IntPtr nsexceptionPtr);
+
+		[DllImport(Constants.FoundationLibrary)]
+		static extern void NSSetUncaughtExceptionHandler(UncaughtExceptionHandlerDelegate handler);
+
+		static void UncaughtExceptionHandler(IntPtr nsexceptionPtr)
+		{
+			var nsexception = Runtime.GetNSObject<NSException>(nsexceptionPtr);
+			if (nsexception != null)
+			{
+				if (EtoEnvironment.Platform.IsMono)
+				{
+					// mono includes full stack already
+					throw new ObjCException(nsexception);
+				}
+				else
+				{
+					// .NET 5 does not include the full stack as it goes through native code.
+					// Fortunately, .NET 5 does actually use the StackTrace property for its Exception.ToString() implementation,
+					// so we can feed the stack to the exception object.
+					var st = new System.Diagnostics.StackTrace(1); // skip UncaughtException method
+					var ststr = st.ToString();
+					throw new ObjCException(nsexception, st.ToString());
+				}
+			}
+		}
+#endif
+
 		public override void AttachEvent(string id)
 		{
 			switch (id)
 			{
+				case Application.UnhandledExceptionEvent:
+					AppDomain.CurrentDomain.UnhandledException += OnCurrentDomainUnhandledException;
+					break;
 				case Application.TerminatingEvent:
 					// handled by app delegate
 					break;
 				case Application.NotificationActivatedEvent:
-					NSUserNotificationCenter.DefaultUserNotificationCenter.DidActivateNotification += (sender, e) => DidActivateNotification(e.Notification);
-					NSApplication.Notifications.ObserveDidFinishLaunching(DidFinishLaunching);
+					if (MacVersion.IsAtLeast(10, 8))
+					{
+						NSUserNotificationCenter.DefaultUserNotificationCenter.DidActivateNotification += (sender, e) => DidActivateNotification(e.Notification);
+						NSApplication.Notifications.ObserveDidFinishLaunching(DidFinishLaunching);
+					}
+					break;
+				case Application.IsActiveChangedEvent:
+					NSNotificationCenter.DefaultCenter.AddObserver(NSApplication.DidBecomeActiveNotification, SharedApplication_ActiveChanged);
+					NSNotificationCenter.DefaultCenter.AddObserver(NSApplication.DidResignActiveNotification, SharedApplication_ActiveChanged);
+					break;
+				case Application.ThemeChangedEvent:
+					AddControlObserver(new NSString("effectiveAppearance"), e =>
+					{
+						Callback.OnThemeChanged(Widget, EventArgs.Empty);
+					});
 					break;
 				default:
 					base.AttachEvent(id);
 					break;
 			}
+		}
+
+		void SharedApplication_ActiveChanged(NSNotification obj) => Callback.OnIsActiveChanged(Widget, EventArgs.Empty);
+
+		void OnCurrentDomainUnhandledException(object sender, System.UnhandledExceptionEventArgs e)
+		{
+			var unhandledExceptionArgs = new UnhandledExceptionEventArgs(e.ExceptionObject, e.IsTerminating);
+			Callback.OnUnhandledException(Widget, unhandledExceptionArgs);
 		}
 
 		static readonly NSString s_NSApplicationLaunchUserNotificationKey = Dlfcn.GetStringConstant(Messaging.AppKitHandle, "NSApplicationLaunchUserNotificationKey");
@@ -274,19 +355,45 @@ namespace Eto.Mac.Forms
 			}
 		}
 
-		public Keys CommonModifier
+		internal void EnsureActivated(bool showInTaskbar, bool showActivated, Icon icon)
 		{
-			get
+			var wasProhibited = Control.ActivationPolicy == NSApplicationActivationPolicy.Prohibited;
+			if (showInTaskbar && wasProhibited)
 			{
-				return Keys.Application;
+				// use the window icon as the app icon if the app is not in the dock yet
+				if (icon != null)
+					Control.ApplicationIconImage = icon.ToNS();
+				
+				// ensure the dock icon is visible (so we can get a menu, etc)
+				Control.ActivationPolicy = NSApplicationActivationPolicy.Regular;
 			}
+
+			if (!showActivated)
+				return;
+
+			// taking activation from whatever app has it is only for callers that opted in, and has to be done
+			// for every window since another app can take it back at any point during a run
+			if (ActivateIgnoringOtherApps)
+				Control.ActivateIgnoringOtherApps(true);
+			// otherwise only ask for it as the app gets its first window, which is all macOS will grant anyway
+			else if (showInTaskbar && wasProhibited)
+				Control.Activate();
 		}
 
-		public Keys AlternateModifier
+		public Keys CommonModifier => Keys.Application;
+
+		public Keys AlternateModifier => Keys.Alt;
+
+		public bool IsActive => Control.Active;
+
+		Theme _currentTheme = Themes.System;
+		public Theme Theme
 		{
-			get
+			get => _currentTheme;
+			set
 			{
-				return Keys.Alt;
+				_currentTheme = value;
+				Control.Appearance = ThemeHandler.GetControl(value);
 			}
 		}
 	}
